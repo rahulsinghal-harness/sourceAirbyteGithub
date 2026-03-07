@@ -1,0 +1,438 @@
+version: 6.36.3
+
+type: DeclarativeSource
+
+description: >-
+  Custom Airbyte connector for GitHub organization data via GraphQL API.
+  Streams: repo_details (incremental), releases_details (full_refresh),
+  team_repositories (full_refresh, grouped by team via custom Python stream).
+
+check:
+  type: CheckStream
+  stream_names:
+    - repo_details
+
+definitions:
+  base_requester:
+    type: HttpRequester
+    url_base: https://api.github.com
+    path: /graphql
+    http_method: POST
+    request_headers:
+      Content-Type: application/json
+    authenticator:
+      type: BearerAuthenticator
+      api_token: "{{ config['access_token'] }}"
+
+  streams:
+    repo_details:
+      type: DeclarativeStream
+      name: repo_details
+      primary_key:
+        - id
+      retriever:
+        type: SimpleRetriever
+        requester:
+          $ref: "#/definitions/base_requester"
+          request_body_json:
+            query: >-
+              query($orgName: String!, $after: String) {
+                organization(login: $orgName) {
+                  repositories(first: 100, after: $after) {
+                    nodes {
+                      id name nameWithOwner url homepageUrl sshUrl
+                      createdAt updatedAt pushedAt description
+                      isPrivate isFork isArchived
+                      primaryLanguage { name }
+                      latestRelease { name tagName publishedAt }
+                      languages(first: 100) { edges { size node { name } } }
+                      readme: object(expression: "HEAD:README.md") { ... on Blob { text byteSize } }
+                      codeowners: object(expression: "HEAD:CODEOWNERS") { ... on Blob { text byteSize } }
+                    }
+                    pageInfo { hasNextPage endCursor }
+                  }
+                }
+              }
+            variables:
+              orgName: "{{ config['org_name'] }}"
+        record_selector:
+          type: RecordSelector
+          extractor:
+            type: DpathExtractor
+            field_path:
+              - data
+              - organization
+              - repositories
+              - nodes
+        paginator:
+          type: DefaultPaginator
+          page_token_option:
+            type: RequestOption
+            inject_into: body_json
+            field_name: variables
+          pagination_strategy:
+            type: CursorPagination
+            cursor_value: >-
+              {{ '{"orgName": "' + config['org_name'] + '", "after": "' +
+              response.data.organization.repositories.pageInfo.endCursor + '"}'
+              if response.data.organization.repositories.pageInfo.endCursor else "" }}
+            stop_condition: >-
+              {{ response.data.organization.repositories.pageInfo.hasNextPage is false }}
+        decoder:
+          type: JsonDecoder
+      incremental_sync:
+        type: DatetimeBasedCursor
+        cursor_field: updatedAt
+        cursor_datetime_formats:
+          - "%Y-%m-%dT%H:%M:%SZ"
+        datetime_format: "%Y-%m-%dT%H:%M:%SZ"
+        start_datetime:
+          datetime: "2020-01-01T00:00:00Z"
+        is_client_side_incremental: true
+      transformations:
+        - type: AddFields
+          fields:
+            - type: AddedFieldDefinition
+              path:
+                - primary_language_name
+              value: "{{ record.primaryLanguage.name if record.primaryLanguage else None }}"
+            - type: AddedFieldDefinition
+              path:
+                - latest_release_name
+              value: "{{ record.latestRelease.name if record.latestRelease else None }}"
+            - type: AddedFieldDefinition
+              path:
+                - latest_release_tag
+              value: "{{ record.latestRelease.tagName if record.latestRelease else None }}"
+            - type: AddedFieldDefinition
+              path:
+                - latest_release_published_at
+              value: "{{ record.latestRelease.publishedAt if record.latestRelease else None }}"
+            - type: AddedFieldDefinition
+              path:
+                - readme_text
+              value: "{{ record.readme.text if record.readme else None }}"
+            - type: AddedFieldDefinition
+              path:
+                - readme_byte_size
+              value: "{{ record.readme.byteSize if record.readme else None }}"
+            - type: AddedFieldDefinition
+              path:
+                - codeowners_text
+              value: "{{ record.codeowners.text if record.codeowners else None }}"
+            - type: AddedFieldDefinition
+              path:
+                - codeowners_byte_size
+              value: "{{ record.codeowners.byteSize if record.codeowners else None }}"
+            - type: AddedFieldDefinition
+              path:
+                - languages
+              value: "{{ record.languages.edges if record.languages else [] }}"
+        - type: RemoveFields
+          field_pointers:
+            - - primaryLanguage
+            - - latestRelease
+            - - readme
+            - - codeowners
+      schema_loader:
+        type: InlineSchemaLoader
+        schema:
+          $ref: "#/schemas/repo_details"
+
+    releases_details:
+      type: DeclarativeStream
+      name: releases_details
+      primary_key:
+        - id
+      retriever:
+        type: SimpleRetriever
+        requester:
+          $ref: "#/definitions/base_requester"
+          request_body_json:
+            query: >-
+              query($orgName: String!, $after: String) {
+                organization(login: $orgName) {
+                  repositories(first: 100, after: $after) {
+                    nodes {
+                      id name
+                      releases(first: 10, orderBy: {field: CREATED_AT, direction: DESC}) {
+                        nodes { name tagName publishedAt description url }
+                      }
+                    }
+                    pageInfo { hasNextPage endCursor }
+                  }
+                }
+              }
+            variables:
+              orgName: "{{ config['org_name'] }}"
+        record_selector:
+          type: RecordSelector
+          extractor:
+            type: DpathExtractor
+            field_path:
+              - data
+              - organization
+              - repositories
+              - nodes
+          record_filter:
+            type: RecordFilter
+            condition: "{{ record.releases.nodes | length > 0 }}"
+        paginator:
+          type: DefaultPaginator
+          page_token_option:
+            type: RequestOption
+            inject_into: body_json
+            field_name: variables
+          pagination_strategy:
+            type: CursorPagination
+            cursor_value: >-
+              {{ '{"orgName": "' + config['org_name'] + '", "after": "' +
+              response.data.organization.repositories.pageInfo.endCursor + '"}'
+              if response.data.organization.repositories.pageInfo.endCursor else "" }}
+            stop_condition: >-
+              {{ response.data.organization.repositories.pageInfo.hasNextPage is false }}
+        decoder:
+          type: JsonDecoder
+      transformations:
+        - type: AddFields
+          fields:
+            - type: AddedFieldDefinition
+              path:
+                - releases
+              value: "{{ record.releases.nodes }}"
+        - type: RemoveFields
+          field_pointers:
+            - - releases
+              - nodes
+      schema_loader:
+        type: InlineSchemaLoader
+        schema:
+          $ref: "#/schemas/releases_details"
+
+streams:
+  - $ref: "#/definitions/streams/repo_details"
+  - $ref: "#/definitions/streams/releases_details"
+
+spec:
+  type: Spec
+  connection_specification:
+    type: object
+    $schema: http://json-schema.org/draft-07/schema#
+    required:
+      - access_token
+      - org_name
+    properties:
+      access_token:
+        type: string
+        title: GitHub Personal Access Token
+        description: >-
+          A GitHub PAT with read:org, repo, and read:packages scopes.
+        order: 0
+        airbyte_secret: true
+      org_name:
+        type: string
+        title: GitHub Organization Name
+        description: The login name of the GitHub organization to fetch data from.
+        order: 1
+    additionalProperties: true
+
+metadata:
+  autoImportSchema:
+    repo_details: false
+    releases_details: false
+    team_repositories: false
+
+schemas:
+  repo_details:
+    type: object
+    $schema: http://json-schema.org/draft-07/schema#
+    additionalProperties: true
+    properties:
+      id:
+        type: string
+      name:
+        type: string
+      nameWithOwner:
+        type: string
+      url:
+        type: string
+      homepageUrl:
+        type:
+          - string
+          - "null"
+      sshUrl:
+        type: string
+      createdAt:
+        type: string
+      updatedAt:
+        type: string
+      pushedAt:
+        type:
+          - string
+          - "null"
+      description:
+        type:
+          - string
+          - "null"
+      isPrivate:
+        type: boolean
+      isFork:
+        type: boolean
+      isArchived:
+        type: boolean
+      primary_language_name:
+        type:
+          - string
+          - "null"
+      latest_release_name:
+        type:
+          - string
+          - "null"
+      latest_release_tag:
+        type:
+          - string
+          - "null"
+      latest_release_published_at:
+        type:
+          - string
+          - "null"
+      readme_text:
+        type:
+          - string
+          - "null"
+      readme_byte_size:
+        type:
+          - integer
+          - "null"
+      codeowners_text:
+        type:
+          - string
+          - "null"
+      codeowners_byte_size:
+        type:
+          - integer
+          - "null"
+      languages:
+        type: array
+        items:
+          type: object
+          properties:
+            size:
+              type: integer
+            node:
+              type: object
+              properties:
+                name:
+                  type: string
+
+  releases_details:
+    type: object
+    $schema: http://json-schema.org/draft-07/schema#
+    additionalProperties: true
+    properties:
+      id:
+        type: string
+      name:
+        type: string
+      releases:
+        type: array
+        items:
+          type: object
+          properties:
+            name:
+              type:
+                - string
+                - "null"
+            tagName:
+              type: string
+            publishedAt:
+              type:
+                - string
+                - "null"
+            description:
+              type:
+                - string
+                - "null"
+            url:
+              type: string
+
+  team_repositories:
+    type: object
+    $schema: http://json-schema.org/draft-07/schema#
+    additionalProperties: true
+    properties:
+      id:
+        type: string
+      name:
+        type: string
+      slug:
+        type: string
+      combinedSlug:
+        type:
+          - string
+          - "null"
+      description:
+        type:
+          - string
+          - "null"
+      createdAt:
+        type:
+          - string
+          - "null"
+      updatedAt:
+        type:
+          - string
+          - "null"
+      avatarUrl:
+        type:
+          - string
+          - "null"
+      privacy:
+        type:
+          - string
+          - "null"
+      notificationSetting:
+        type:
+          - string
+          - "null"
+      url:
+        type:
+          - string
+          - "null"
+      membersUrl:
+        type:
+          - string
+          - "null"
+      reviewRequestDelegationEnabled:
+        type:
+          - boolean
+          - "null"
+      reviewRequestDelegationAlgorithm:
+        type:
+          - string
+          - "null"
+      reviewRequestDelegationMemberCount:
+        type:
+          - integer
+          - "null"
+      reviewRequestDelegationNotifyTeam:
+        type:
+          - boolean
+          - "null"
+      viewerCanAdminister:
+        type:
+          - boolean
+          - "null"
+      repositories:
+        type: array
+        items:
+          type: object
+          properties:
+            permission:
+              type: string
+            repo_name:
+              type: string
+            repo_url:
+              type: string
+            is_private:
+              type: boolean
