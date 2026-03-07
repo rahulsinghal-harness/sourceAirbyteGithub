@@ -53,19 +53,19 @@ For a 500-repo, 50-team org: ~631 total points (12.6% of hourly budget).
 
 ```bash
 # Build
-docker build -t rahulsinghal-harness/sourceairbytegithub:0.0.1 .
+docker build -t rahulsinghalharness/sourceairbytegithub:0.0.1 .
 
 # Spec
-docker run --rm rahulsinghal-harness/sourceairbytegithub:0.0.1 spec
+docker run --rm rahulsinghalharness/sourceairbytegithub:0.0.1 spec
 
 # Discover
 docker run --rm -v $(pwd)/secrets:/secrets \
-  rahulsinghal-harness/sourceairbytegithub:0.0.1 discover \
+  rahulsinghalharness/sourceairbytegithub:0.0.1 discover \
   --config /secrets/config.json
 
 # Read
 docker run --rm -v $(pwd)/secrets:/secrets \
-  rahulsinghal-harness/sourceairbytegithub:0.0.1 read \
+  rahulsinghalharness/sourceairbytegithub:0.0.1 read \
   --config /secrets/config.json \
   --catalog /secrets/catalog.json
 ```
@@ -87,7 +87,7 @@ POST /api/v1/catalog
 ```
 ```json
 {
-  "source_connector_image": "rahulsinghal-harness/sourceairbytegithub",
+  "source_connector_image": "rahulsinghalharness/sourceairbytegithub",
   "source_connector_tag": "0.0.1",
   "config": {
     "access_token": "ghp_xxxxxxxxxxxx",
@@ -106,7 +106,7 @@ POST /api/v1/integrations
 ```json
 {
   "identifier": "github-org-data",
-  "airbyte_connector_image": "rahulsinghal-harness/sourceairbytegithub",
+  "airbyte_connector_image": "rahulsinghalharness/sourceairbytegithub",
   "airbyte_connector_tag": "0.0.1",
   "airbyte_connector_config": {
     "access_token": "ghp_xxxxxxxxxxxx",
@@ -157,4 +157,4 @@ POST /api/v1/integrations
 - **Base image:** `airbyte/source-declarative-manifest:6.36.3`
 - **Declarative streams:** `repo_details`, `releases_details` (YAML manifest)
 - **Custom Python stream:** `team_repositories` (hybrid nested query + pagination)
-- **Docker image:** `rahulsinghal-harness/sourceairbytegithub:0.0.1`
+- **Docker image:** `rahulsinghalharness/sourceairbytegithub:0.0.1`
