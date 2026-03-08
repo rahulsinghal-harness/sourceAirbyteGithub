@@ -8,7 +8,7 @@ Custom Airbyte connector that fetches GitHub organization data via the GraphQL A
 
 Full repository metadata for every repo in the org. Supports incremental sync on `updatedAt` (client-side filtering).
 
-**Fields:** `id`, `name`, `nameWithOwner`, `url`, `homepageUrl`, `sshUrl`, `createdAt`, `updatedAt`, `pushedAt`, `description`, `isPrivate`, `isFork`, `isArchived`, `primary_language_name`, `latest_release_name`, `latest_release_tag`, `latest_release_published_at`, `readme_text`, `readme_byte_size`, `codeowners_text`, `codeowners_byte_size`, `languages` (array of `{size, node: {name}}`)
+**Fields:** `id`, `name`, `nameWithOwner`, `url`, `homepageUrl`, `sshUrl`, `createdAt`, `updatedAt`, `pushedAt`, `description`, `isPrivate`, `isFork`, `isArchived`, `primaryLanguage` (object `{ name }`), `latestRelease` (object `{ name, tagName, publishedAt }`), `readme` (object `{ text, byteSize }`), `codeowners` (object `{ text, byteSize }`), `languages` (array of `{ name, size }`)
 
 **Pagination:** Cursor-based on `organization.repositories`, page size 100.
 
@@ -30,7 +30,7 @@ One record per team with all team metadata and a `repositories` array containing
 
 **Team fields:** `id`, `name`, `slug`, `combinedSlug`, `description`, `createdAt`, `updatedAt`, `avatarUrl`, `privacy`, `notificationSetting`, `url`, `membersUrl`, `reviewRequestDelegationEnabled`, `reviewRequestDelegationAlgorithm`, `reviewRequestDelegationMemberCount`, `reviewRequestDelegationNotifyTeam`, `viewerCanAdminister`
 
-**Repo fields (per entry):** `permission`, `repo_name`, `repo_url`, `is_private`
+**Repo fields (per entry):** `permission`, `name`, `url`, `isPrivate`
 
 **Implementation:** Custom Python stream with hybrid approach -- one bulk nested query fetches teams + first 100 repos per team, then conditional follow-up pagination only for teams with >100 repos.
 
@@ -42,6 +42,7 @@ One record per team with all team metadata and a `repositories` array containing
 |-------|------|----------|-------------|
 | `access_token` | string (secret) | Yes | GitHub PAT with `read:org`, `repo` scopes |
 | `org_name` | string | Yes | GitHub organization login name |
+| `start_date` | string (ISO 8601) | No | Only include data on or after this date. Applies to all streams. Default: `1970-01-01T00:00:00Z`. |
 
 ## Rate Limits
 
@@ -53,19 +54,19 @@ For a 500-repo, 50-team org: ~631 total points (12.6% of hourly budget).
 
 ```bash
 # Build
-docker build -t rahulsinghalharness/sourceairbytegithub:0.0.1 .
+docker build -t rahulsinghalharness/sourceairbytegithub:0.0.2 .
 
 # Spec
-docker run --rm rahulsinghalharness/sourceairbytegithub:0.0.1 spec
+docker run --rm rahulsinghalharness/sourceairbytegithub:0.0.2 spec
 
 # Discover
 docker run --rm -v $(pwd)/secrets:/secrets \
-  rahulsinghalharness/sourceairbytegithub:0.0.1 discover \
+  rahulsinghalharness/sourceairbytegithub:0.0.2 discover \
   --config /secrets/config.json
 
 # Read
 docker run --rm -v $(pwd)/secrets:/secrets \
-  rahulsinghalharness/sourceairbytegithub:0.0.1 read \
+  rahulsinghalharness/sourceairbytegithub:0.0.2 read \
   --config /secrets/config.json \
   --catalog /secrets/catalog.json
 ```
@@ -74,9 +75,11 @@ docker run --rm -v $(pwd)/secrets:/secrets \
 ```json
 {
   "access_token": "ghp_xxxxxxxxxxxx",
-  "org_name": "your-github-org"
+  "org_name": "your-github-org",
+  "start_date": "2025-01-01T00:00:00Z"
 }
 ```
+`start_date` is optional; omit it to sync from epoch (all data).
 
 ## k8s-agent Integration
 
@@ -88,7 +91,7 @@ POST /api/v1/catalog
 ```json
 {
   "source_connector_image": "rahulsinghalharness/sourceairbytegithub",
-  "source_connector_tag": "0.0.1",
+  "source_connector_tag": "0.0.2",
   "config": {
     "access_token": "ghp_xxxxxxxxxxxx",
     "org_name": "your-github-org"
@@ -107,7 +110,7 @@ POST /api/v1/integrations
 {
   "identifier": "github-org-data",
   "airbyte_connector_image": "rahulsinghalharness/sourceairbytegithub",
-  "airbyte_connector_tag": "0.0.1",
+  "airbyte_connector_tag": "0.0.2",
   "airbyte_connector_config": {
     "access_token": "ghp_xxxxxxxxxxxx",
     "org_name": "your-github-org"
@@ -154,7 +157,7 @@ POST /api/v1/integrations
 
 ## Architecture
 
-- **Base image:** `airbyte/source-declarative-manifest:6.36.3`
+- **Base image:** `airbyte/source-declarative-manifest:6.54.6`
 - **Declarative streams:** `repo_details`, `releases_details` (YAML manifest)
 - **Custom Python stream:** `team_repositories` (hybrid nested query + pagination)
-- **Docker image:** `rahulsinghalharness/sourceairbytegithub:0.0.1`
+- **Docker image:** `rahulsinghalharness/sourceairbytegithub:0.0.2`

@@ -108,9 +108,9 @@ class TeamRepositoriesStream(Stream):
                         "type": "object",
                         "properties": {
                             "permission": {"type": "string"},
-                            "repo_name": {"type": "string"},
-                            "repo_url": {"type": "string"},
-                            "is_private": {"type": "boolean"},
+                            "name": {"type": "string"},
+                            "url": {"type": "string"},
+                            "isPrivate": {"type": "boolean"},
                         },
                     },
                 },
@@ -125,6 +125,7 @@ class TeamRepositoriesStream(Stream):
         stream_state: Optional[Mapping[str, Any]] = None,
     ) -> Iterable[Mapping[str, Any]]:
         org = self._config["org_name"]
+        start_date = self._config.get("start_date", "1970-01-01T00:00:00Z")
         team_cursor = None
         has_next_teams = True
 
@@ -133,6 +134,8 @@ class TeamRepositoriesStream(Stream):
             teams_data = resp["data"]["organization"]["teams"]
 
             for team in teams_data["nodes"]:
+                if team.get("updatedAt") and team["updatedAt"] < start_date:
+                    continue
                 repos = self._extract_repos(team["repositories"]["edges"])
 
                 if team["repositories"]["pageInfo"]["hasNextPage"]:
@@ -172,9 +175,9 @@ class TeamRepositoriesStream(Stream):
         return [
             {
                 "permission": e["permission"],
-                "repo_name": e["node"]["name"],
-                "repo_url": e["node"]["url"],
-                "is_private": e["node"]["isPrivate"],
+                "name": e["node"]["name"],
+                "url": e["node"]["url"],
+                "isPrivate": e["node"]["isPrivate"],
             }
             for e in edges
         ]

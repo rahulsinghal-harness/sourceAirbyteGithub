@@ -1,4 +1,4 @@
-FROM airbyte/source-declarative-manifest:6.36.3
+FROM airbyte/source-declarative-manifest:6.54.6
 
 COPY manifest.yaml /airbyte/integration_code/source_declarative_manifest/manifest.yaml
 COPY components.py /airbyte/integration_code/source_declarative_manifest/components.py

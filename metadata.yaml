@@ -2,11 +2,11 @@ data:
   connectorSubtype: api
   connectorType: source
   definitionId: custom-github-graphql
-  dockerImageTag: 0.0.1
+  dockerImageTag: 0.0.2
   dockerRepository: rahulsinghalharness/sourceairbytegithub
   license: MIT
   name: GitHub Organization (GraphQL)
   releaseStage: alpha
   supportLevel: community
   connectorBuildOptions:
-    baseImage: airbyte/source-declarative-manifest:6.36.3
+    baseImage: airbyte/source-declarative-manifest:6.54.6

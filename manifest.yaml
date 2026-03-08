@@ -1,4 +1,4 @@
-version: 6.36.3
+version: 6.54.6
 
 type: DeclarativeSource
 
@@ -87,53 +87,17 @@ definitions:
           - "%Y-%m-%dT%H:%M:%SZ"
         datetime_format: "%Y-%m-%dT%H:%M:%SZ"
         start_datetime:
-          datetime: "2020-01-01T00:00:00Z"
+          type: MinMaxDatetime
+          datetime: "{{ config.get('start_date', '1970-01-01T00:00:00Z') }}"
+          datetime_format: "%Y-%m-%dT%H:%M:%SZ"
         is_client_side_incremental: true
       transformations:
         - type: AddFields
           fields:
             - type: AddedFieldDefinition
               path:
-                - primary_language_name
-              value: "{{ record.primaryLanguage.name if record.primaryLanguage else None }}"
-            - type: AddedFieldDefinition
-              path:
-                - latest_release_name
-              value: "{{ record.latestRelease.name if record.latestRelease else None }}"
-            - type: AddedFieldDefinition
-              path:
-                - latest_release_tag
-              value: "{{ record.latestRelease.tagName if record.latestRelease else None }}"
-            - type: AddedFieldDefinition
-              path:
-                - latest_release_published_at
-              value: "{{ record.latestRelease.publishedAt if record.latestRelease else None }}"
-            - type: AddedFieldDefinition
-              path:
-                - readme_text
-              value: "{{ record.readme.text if record.readme else None }}"
-            - type: AddedFieldDefinition
-              path:
-                - readme_byte_size
-              value: "{{ record.readme.byteSize if record.readme else None }}"
-            - type: AddedFieldDefinition
-              path:
-                - codeowners_text
-              value: "{{ record.codeowners.text if record.codeowners else None }}"
-            - type: AddedFieldDefinition
-              path:
-                - codeowners_byte_size
-              value: "{{ record.codeowners.byteSize if record.codeowners else None }}"
-            - type: AddedFieldDefinition
-              path:
                 - languages
-              value: "{{ record.languages.edges if record.languages else [] }}"
-        - type: RemoveFields
-          field_pointers:
-            - - primaryLanguage
-            - - latestRelease
-            - - readme
-            - - codeowners
+              value: "{{ [ {'name': item.node.name, 'size': item.size} for item in (record.languages.edges or []) ] }}"
       schema_loader:
         type: InlineSchemaLoader
         schema:
@@ -176,7 +140,10 @@ definitions:
               - nodes
           record_filter:
             type: RecordFilter
-            condition: "{{ record.releases.nodes | length > 0 }}"
+            condition: >-
+              {{ (record.releases.nodes | length > 0) and
+              (((record.releases.nodes | selectattr('publishedAt') | map(attribute='publishedAt') | list | max) >= config.get('start_date', '1970-01-01T00:00:00Z'))
+              if (record.releases.nodes | selectattr('publishedAt') | list | length > 0) else false) }}
         paginator:
           type: DefaultPaginator
           page_token_option:
@@ -234,6 +201,16 @@ spec:
         title: GitHub Organization Name
         description: The login name of the GitHub organization to fetch data from.
         order: 1
+      start_date:
+        type: string
+        title: Start Date
+        description: >-
+          Only include data on or after this date (ISO 8601, e.g. 2025-01-01T00:00:00Z).
+          Applies to all streams. If omitted, defaults to 1970-01-01 (epoch).
+        order: 2
+        pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        examples:
+          - "2025-01-01T00:00:00Z"
     additionalProperties: true
 
 metadata:
@@ -280,50 +257,65 @@ schemas:
         type: boolean
       isArchived:
         type: boolean
-      primary_language_name:
+      primaryLanguage:
         type:
-          - string
+          - object
           - "null"
-      latest_release_name:
+        properties:
+          name:
+            type: string
+      latestRelease:
         type:
-          - string
+          - object
           - "null"
-      latest_release_tag:
+        properties:
+          name:
+            type:
+              - string
+              - "null"
+          tagName:
+            type:
+              - string
+              - "null"
+          publishedAt:
+            type:
+              - string
+              - "null"
+      readme:
         type:
-          - string
+          - object
           - "null"
-      latest_release_published_at:
+        properties:
+          text:
+            type:
+              - string
+              - "null"
+          byteSize:
+            type:
+              - integer
+              - "null"
+      codeowners:
         type:
-          - string
+          - object
           - "null"
-      readme_text:
-        type:
-          - string
-          - "null"
-      readme_byte_size:
-        type:
-          - integer
-          - "null"
-      codeowners_text:
-        type:
-          - string
-          - "null"
-      codeowners_byte_size:
-        type:
-          - integer
-          - "null"
+        properties:
+          text:
+            type:
+              - string
+              - "null"
+          byteSize:
+            type:
+              - integer
+              - "null"
       languages:
         type: array
         items:
           type: object
           properties:
+            name:
+              type: string
             size:
               type: integer
-            node:
-              type: object
-              properties:
-                name:
-                  type: string
 
   releases_details:
     type: object
@@ -430,9 +422,9 @@ schemas:
           properties:
             permission:
               type: string
-            repo_name:
+            name:
               type: string
-            repo_url:
+            url:
               type: string
-            is_private:
+            isPrivate:
               type: boolean
