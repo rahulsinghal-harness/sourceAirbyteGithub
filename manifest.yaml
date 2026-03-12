@@ -46,8 +46,8 @@ definitions:
                       primaryLanguage { name }
                       latestRelease { name tagName publishedAt }
                       languages(first: 100) { edges { size node { name } } }
-                      readme: object(expression: "HEAD:README.md") { ... on Blob { text byteSize } }
-                      codeowners: object(expression: "HEAD:CODEOWNERS") { ... on Blob { text byteSize } }
+                      readme: object(expression: "HEAD:README.md") { ... on Blob { text byteSize isBinary } }
+                      codeowners: object(expression: "HEAD:CODEOWNERS") { ... on Blob { text byteSize isBinary } }
                     }
                     pageInfo { hasNextPage endCursor }
                   }
@@ -113,7 +113,7 @@ definitions:
                     nodes {
                       id name
                       releases(first: 10, orderBy: {field: CREATED_AT, direction: DESC}) {
-                        nodes { name tagName publishedAt description url }
+                        nodes { name tagName isPrerelease isDraft publishedAt description url }
                       }
                     }
                     pageInfo { hasNextPage endCursor }
@@ -287,6 +287,10 @@ schemas:
             type:
               - integer
               - "null"
+          isBinary:
+            type:
+              - boolean
+              - "null"
       codeowners:
         type:
           - object
@@ -299,6 +303,10 @@ schemas:
           byteSize:
             type:
               - integer
+              - "null"
+          isBinary:
+            type:
+              - boolean
               - "null"
       languages:
         type: array
@@ -330,6 +338,14 @@ schemas:
                 - "null"
             tagName:
               type: string
+            isPrerelease:
+              type:
+                - boolean
+                - "null"
+            isDraft:
+              type:
+                - boolean
+                - "null"
             publishedAt:
               type:
                 - string
