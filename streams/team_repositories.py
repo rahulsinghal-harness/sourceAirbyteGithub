@@ -1,17 +1,11 @@
-"""Custom Python stream for team_repositories.
-
-Uses a hybrid approach: one bulk nested GraphQL query fetches teams + first 100
-repos per team, then conditional follow-up pagination for teams with >100 repos.
-Emits one grouped record per team.
-"""
+"""Team repositories stream — one record per team with nested repo list."""
 
 from typing import Any, Iterable, List, Mapping, Optional
 
-import requests
-from airbyte_cdk.sources.streams import Stream
 from airbyte_cdk.models import SyncMode
+from airbyte_cdk.sources.streams import Stream
 
-GRAPHQL_URL = "https://api.github.com/graphql"
+from streams.github_graphql import GitHubGraphQLMixin
 
 BULK_QUERY = """
 query($orgName: String!, $teamCursor: String) {
@@ -63,17 +57,13 @@ TEAM_FIELDS = [
 ]
 
 
-class TeamRepositoriesStream(Stream):
+class TeamRepositoriesStream(GitHubGraphQLMixin, Stream):
     primary_key = "slug"
 
     def __init__(self, config: Mapping[str, Any], **kwargs: Any):
         super().__init__(**kwargs)
         self._config = config
-        self._session = requests.Session()
-        self._session.headers.update({
-            "Authorization": f"Bearer {config['access_token']}",
-            "Content-Type": "application/json",
-        })
+        self._init_session(config)
 
     @property
     def name(self) -> str:
@@ -139,13 +129,9 @@ class TeamRepositoriesStream(Stream):
                 repos = self._extract_repos(team["repositories"]["edges"])
 
                 if team["repositories"]["pageInfo"]["hasNextPage"]:
-                    repos.extend(
-                        self._fetch_remaining_repos(
-                            org,
-                            team["slug"],
-                            team["repositories"]["pageInfo"]["endCursor"],
-                        )
-                    )
+                    repos.extend(self._fetch_remaining_repos(
+                        org, team["slug"], team["repositories"]["pageInfo"]["endCursor"],
+                    ))
 
                 record = {f: team.get(f) for f in TEAM_FIELDS}
                 record["repositories"] = repos
@@ -154,16 +140,11 @@ class TeamRepositoriesStream(Stream):
             has_next_teams = teams_data["pageInfo"]["hasNextPage"]
             team_cursor = teams_data["pageInfo"]["endCursor"]
 
-    def _fetch_remaining_repos(
-        self, org: str, team_slug: str, cursor: str
-    ) -> List[Mapping[str, Any]]:
+    def _fetch_remaining_repos(self, org: str, team_slug: str, cursor: str) -> List[Mapping[str, Any]]:
         repos: list = []
         has_next = True
         while has_next:
-            resp = self._graphql(
-                FOLLOWUP_QUERY,
-                {"orgName": org, "teamSlug": team_slug, "after": cursor},
-            )
+            resp = self._graphql(FOLLOWUP_QUERY, {"orgName": org, "teamSlug": team_slug, "after": cursor})
             repo_data = resp["data"]["organization"]["team"]["repositories"]
             repos.extend(self._extract_repos(repo_data["edges"]))
             has_next = repo_data["pageInfo"]["hasNextPage"]
@@ -173,19 +154,7 @@ class TeamRepositoriesStream(Stream):
     @staticmethod
     def _extract_repos(edges: list) -> List[Mapping[str, Any]]:
         return [
-            {
-                "permission": e["permission"],
-                "name": e["node"]["name"],
-                "url": e["node"]["url"],
-                "isPrivate": e["node"]["isPrivate"],
-            }
+            {"permission": e["permission"], "name": e["node"]["name"],
+             "url": e["node"]["url"], "isPrivate": e["node"]["isPrivate"]}
             for e in edges
         ]
-
-    def _graphql(self, query: str, variables: dict) -> dict:
-        resp = self._session.post(GRAPHQL_URL, json={"query": query, "variables": variables})
-        resp.raise_for_status()
-        body = resp.json()
-        if "errors" in body:
-            raise RuntimeError(f"GraphQL errors: {body['errors']}")
-        return body
