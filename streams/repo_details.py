@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 QUERY = """
 query($orgName: String!, $after: String) {
   organization(login: $orgName) {
-    repositories(first: 20, after: $after) {
+    repositories(first: 50, after: $after) {
       nodes {
         id name nameWithOwner url homepageUrl sshUrl
         createdAt updatedAt pushedAt description
@@ -103,6 +103,7 @@ class RepoDetailsStream(GitHubGraphQLMixin, Stream):
     def __init__(self, config: Mapping[str, Any], **kwargs: Any):
         super().__init__(**kwargs)
         self._config = config
+        self._cursor_value: str = ""
         self._init_session(config)
 
     @property
@@ -111,6 +112,15 @@ class RepoDetailsStream(GitHubGraphQLMixin, Stream):
 
     def get_json_schema(self) -> Mapping[str, Any]:
         return SCHEMA
+
+    def get_updated_state(
+        self,
+        current_stream_state: Mapping[str, Any],
+        latest_record: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        current = current_stream_state.get("updatedAt", "")
+        latest = latest_record.get("updatedAt", "")
+        return {"updatedAt": max(current, latest)}
 
     def read_records(
         self,
@@ -139,6 +149,7 @@ class RepoDetailsStream(GitHubGraphQLMixin, Stream):
                 _flatten_languages(repo)
                 if repo.get("updatedAt", "") < effective_cursor:
                     continue
+                self._cursor_value = max(self._cursor_value, repo.get("updatedAt", ""))
                 yield repo
                 emitted += 1
 
