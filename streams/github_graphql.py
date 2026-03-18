@@ -22,12 +22,17 @@ class GitHubGraphQLMixin:
             "Content-Type": "application/json",
         })
 
+    _MAX_RETRIES = 5
+
     def _graphql(self, query: str, variables: dict) -> dict:
-        for attempt in range(3):
+        for attempt in range(self._MAX_RETRIES):
             resp = self._session.post(GRAPHQL_URL, json={"query": query, "variables": variables})
-            if resp.status_code in (502, 503) and attempt < 2:
-                wait = 2 ** attempt
-                logger.warning("GraphQL %d, retrying in %ds (attempt %d/3)", resp.status_code, wait, attempt + 1)
+            if resp.status_code in (502, 503) and attempt < self._MAX_RETRIES - 1:
+                wait = min(2 ** attempt, 30)
+                logger.warning(
+                    "GraphQL %d, retrying in %ds (attempt %d/%d)",
+                    resp.status_code, wait, attempt + 1, self._MAX_RETRIES,
+                )
                 time.sleep(wait)
                 continue
             resp.raise_for_status()
@@ -35,4 +40,4 @@ class GitHubGraphQLMixin:
             if "errors" in body:
                 raise RuntimeError(f"GraphQL errors: {body['errors']}")
             return body
-        raise RuntimeError("GraphQL request failed after 3 attempts")
+        raise RuntimeError(f"GraphQL request failed after {self._MAX_RETRIES} attempts")

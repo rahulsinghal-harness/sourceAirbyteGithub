@@ -5,7 +5,7 @@ WORKDIR /connector
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py source.py ./
+COPY main.py source.py auth.py ./
 COPY streams/ streams/
 COPY ai_asset_auto_discovery/ ai_asset_auto_discovery/
 
