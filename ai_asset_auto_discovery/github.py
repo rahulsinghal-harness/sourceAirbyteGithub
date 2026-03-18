@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 
 import aiohttp
 
+from auth import create_app_jwt, INSTALLATION_TOKEN_URL, INSTALLATION_TOKEN_HEADERS, TOKEN_CACHE_TTL
+
 logger = logging.getLogger(__name__)
 
 GRAPHQL_URL = "https://api.github.com/graphql"
@@ -87,23 +89,19 @@ class GitHubGraphQLClient:
         return await self._create_installation_token()
 
     async def _create_installation_token(self) -> str:
-        import jwt
-
-        now = int(time.time())
-        payload = {"iat": now - 60, "exp": now + 600, "iss": self._app_id}
-        jwt_token = jwt.encode(payload, self._private_key, algorithm="RS256")
+        jwt_token = create_app_jwt(self._app_id, self._private_key)
 
         async with aiohttp.ClientSession() as session:
-            url = f"https://api.github.com/app/installations/{self._installation_id}/access_tokens"
+            url = INSTALLATION_TOKEN_URL.format(installation_id=self._installation_id)
             async with session.post(url, headers={
                 "Authorization": f"Bearer {jwt_token}",
-                "Accept": "application/vnd.github+json",
+                **INSTALLATION_TOKEN_HEADERS,
             }) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
 
         self._installation_token = data["token"]
-        self._installation_token_expires = time.time() + 3500
+        self._installation_token_expires = time.time() + TOKEN_CACHE_TTL
         return self._installation_token
 
     async def scan_org(self, org: str) -> list[RepoFiles]:

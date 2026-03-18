@@ -10,7 +10,7 @@ from streams.github_graphql import GitHubGraphQLMixin
 BULK_QUERY = """
 query($orgName: String!, $teamCursor: String) {
   organization(login: $orgName) {
-    teams(first: 10, after: $teamCursor) {
+    teams(first: 45, after: $teamCursor) {
       pageInfo { hasNextPage endCursor }
       nodes {
         id name slug combinedSlug description createdAt updatedAt
@@ -18,7 +18,7 @@ query($orgName: String!, $teamCursor: String) {
         reviewRequestDelegationEnabled reviewRequestDelegationAlgorithm
         reviewRequestDelegationMemberCount reviewRequestDelegationNotifyTeam
         viewerCanAdminister
-        repositories(first: 50) {
+        repositories(first: 100) {
           pageInfo { hasNextPage endCursor }
           edges {
             permission
@@ -35,7 +35,7 @@ FOLLOWUP_QUERY = """
 query($orgName: String!, $teamSlug: String!, $after: String) {
   organization(login: $orgName) {
     team(slug: $teamSlug) {
-      repositories(first: 50, after: $after) {
+      repositories(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
         edges {
           permission

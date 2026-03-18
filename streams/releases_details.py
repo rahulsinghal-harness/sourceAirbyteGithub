@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 QUERY = """
 query($orgName: String!, $after: String) {
   organization(login: $orgName) {
-    repositories(first: 25, after: $after) {
+    repositories(first: 100, after: $after) {
       nodes {
         id name
         releases(first: 10, orderBy: {field: CREATED_AT, direction: DESC}) {

@@ -1,11 +1,14 @@
 """GitHub source — combines org repo/release/team streams with AI asset discovery."""
 
 import logging
+import time
 from typing import Any, List, Mapping, Tuple, Optional
 
+import requests
 from airbyte_cdk.sources import AbstractSource
 from airbyte_cdk.sources.streams import Stream
 
+from auth import create_installation_token_sync, TOKEN_CACHE_TTL
 from streams.repo_details import RepoDetailsStream
 from streams.releases_details import ReleasesDetailsStream
 from streams.team_repositories import TeamRepositoriesStream
@@ -14,31 +17,41 @@ from streams.ai_asset import AIAssetStream, AIAssetScanCache, STREAM_TYPE_MAP
 logger = logging.getLogger(__name__)
 
 
+class _InstallationTokenCache:
+    """Caches a GitHub App installation token so multiple sync streams share one."""
+
+    def __init__(self):
+        self._token: str | None = None
+        self._expires_at: float = 0
+
+    def get_token(self, app_id: str, private_key: str, installation_id: str) -> str:
+        if self._token and time.time() < self._expires_at:
+            return self._token
+
+        self._token = create_installation_token_sync(app_id, private_key, installation_id)
+        self._expires_at = time.time() + TOKEN_CACHE_TTL
+        logger.info("Created new GitHub App installation token (expires in ~58m)")
+        return self._token
+
+
+_token_cache = _InstallationTokenCache()
+
+
 def _resolve_token(config: Mapping[str, Any]) -> str:
-    """Resolve a usable token from config (token or GitHub App)."""
+    """Resolve a usable token from config (token or GitHub App).
+
+    For GitHub App auth, the installation token is cached and reused across
+    all sync streams and check_connection calls within the same process.
+    """
     auth_type = config.get("auth_type", "token")
     if auth_type == "token":
         return config["access_token"]
-    # For GitHub App auth, the async client handles JWT/installation token itself.
-    # For sync streams (repo_details, releases, teams), we create an installation token here.
-    import time
-    import jwt
-    import requests
 
-    app_id = config["github_app_id"]
-    private_key = config["github_app_private_key"]
-    installation_id = config["github_app_installation_id"]
-
-    now = int(time.time())
-    payload = {"iat": now - 60, "exp": now + 600, "iss": app_id}
-    jwt_token = jwt.encode(payload, private_key, algorithm="RS256")
-
-    resp = requests.post(
-        f"https://api.github.com/app/installations/{installation_id}/access_tokens",
-        headers={"Authorization": f"Bearer {jwt_token}", "Accept": "application/vnd.github+json"},
+    return _token_cache.get_token(
+        app_id=config["github_app_id"],
+        private_key=config["github_app_private_key"],
+        installation_id=config["github_app_installation_id"],
     )
-    resp.raise_for_status()
-    return resp.json()["token"]
 
 
 class GitHubSource(AbstractSource):
@@ -46,7 +59,6 @@ class GitHubSource(AbstractSource):
         if not config.get("org_name") and not config.get("repos"):
             return False, "At least one of 'org_name' or 'repos' must be provided"
         try:
-            import requests
             token = _resolve_token(config)
             resp = requests.post(
                 "https://api.github.com/graphql",

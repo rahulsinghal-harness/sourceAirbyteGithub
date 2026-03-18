@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 QUERY = """
 query($orgName: String!, $after: String) {
   organization(login: $orgName) {
-    repositories(first: 20, after: $after) {
+    repositories(first: 100, after: $after) {
       nodes {
         id name nameWithOwner url homepageUrl sshUrl
         createdAt updatedAt pushedAt description
