@@ -13,14 +13,14 @@ logger = logging.getLogger(__name__)
 QUERY = """
 query($orgName: String!, $after: String) {
   organization(login: $orgName) {
-    repositories(first: 100, after: $after) {
+    repositories(first: 20, after: $after) {
       nodes {
         id name nameWithOwner url homepageUrl sshUrl
         createdAt updatedAt pushedAt description
         isPrivate isFork isArchived
         primaryLanguage { name }
         latestRelease { name tagName publishedAt }
-        languages(first: 100) { edges { size node { name } } }
+        languages(first: 20) { edges { size node { name } } }
         readme: object(expression: "HEAD:README.md") { ... on Blob { text byteSize isBinary } }
         codeowners: object(expression: "HEAD:CODEOWNERS") { ... on Blob { text byteSize isBinary } }
       }

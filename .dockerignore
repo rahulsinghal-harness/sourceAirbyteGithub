@@ -35,3 +35,4 @@ ai_asset_auto_discovery/Dockerfile
 .dockerignore
 docker-compose.yml
 output/
+archived

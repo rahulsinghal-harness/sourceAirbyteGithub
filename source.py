@@ -43,6 +43,8 @@ def _resolve_token(config: Mapping[str, Any]) -> str:
 
 class GitHubSource(AbstractSource):
     def check_connection(self, logger: logging.Logger, config: Mapping[str, Any]) -> Tuple[bool, Optional[Any]]:
+        if not config.get("org_name") and not config.get("repos"):
+            return False, "At least one of 'org_name' or 'repos' must be provided"
         try:
             import requests
             token = _resolve_token(config)
@@ -62,15 +64,21 @@ class GitHubSource(AbstractSource):
             return False, str(e)
 
     def streams(self, config: Mapping[str, Any]) -> List[Stream]:
+        result: List[Stream] = []
+
+        if config.get("org_name"):
+            result.extend([
+                RepoDetailsStream(config=config),
+                ReleasesDetailsStream(config=config),
+                TeamRepositoriesStream(config=config),
+            ])
+
         scan_cache = AIAssetScanCache()
-        return [
-            RepoDetailsStream(config=config),
-            ReleasesDetailsStream(config=config),
-            TeamRepositoriesStream(config=config),
-        ] + [
+        result.extend(
             AIAssetStream(asset_type=asset_type, config=config, scan_cache=scan_cache)
             for asset_type in STREAM_TYPE_MAP.values()
-        ]
+        )
+        return result
 
     def spec(self, logger: logging.Logger) -> Any:
         from airbyte_cdk.models import ConnectorSpecification
@@ -78,7 +86,7 @@ class GitHubSource(AbstractSource):
             connectionSpecification={
                 "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
-                "required": ["org_name"],
+                "required": [],
                 "properties": {
                     "auth_type": {
                         "type": "string",
