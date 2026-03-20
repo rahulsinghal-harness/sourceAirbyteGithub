@@ -117,7 +117,10 @@ class GitHubSource(AbstractSource):
                     "github_app_private_key": {
                         "type": "string",
                         "airbyte_secret": True,
-                        "description": "GitHub App private key PEM (when auth_type=github_app)",
+                        "description": (
+                            "GitHub App private key: full PEM from the downloaded .pem, or bare base64 "
+                            "DER (PKCS#1/PKCS#8) with optional whitespace. Not the in-app 'Public key'."
+                        ),
                     },
                     "github_app_installation_id": {
                         "type": "string",
