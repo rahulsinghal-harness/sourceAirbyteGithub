@@ -1,6 +1,5 @@
-# Dependencies for local dev / IDE go-to-definition (ManifestDeclarativeSource, etc.)
-# Runtime uses Docker base image airbyte/source-declarative-manifest:6.54.6.
-# Install: python -m venv .venv && .venv/bin/pip install -r requirements.txt
-
-airbyte-cdk>=3.9.0
+airbyte-cdk==7.13.0
+requests>=2.31.0
+aiohttp>=3.9.0
+PyJWT[crypto]>=2.8.0
 PyYAML>=6.0

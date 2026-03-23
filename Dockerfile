@@ -1,8 +1,13 @@
-FROM airbyte/source-declarative-manifest:6.54.6
+FROM python:3.11-slim
 
-COPY manifest.yaml /airbyte/integration_code/source_declarative_manifest/manifest.yaml
-COPY components.py /airbyte/integration_code/source_declarative_manifest/components.py
-COPY main_custom.py /airbyte/integration_code/main_custom.py
+WORKDIR /connector
 
-ENV AIRBYTE_ENTRYPOINT="python /airbyte/integration_code/main_custom.py"
-ENTRYPOINT ["python", "/airbyte/integration_code/main_custom.py"]
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY main.py source.py auth.py ./
+COPY streams/ streams/
+COPY ai_asset_auto_discovery/ ai_asset_auto_discovery/
+
+ENV AIRBYTE_ENTRYPOINT="python /connector/main.py"
+ENTRYPOINT ["python", "/connector/main.py"]
