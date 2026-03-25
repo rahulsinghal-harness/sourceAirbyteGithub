@@ -22,7 +22,7 @@ query($orgName: String!, $teamCursor: String) {
           pageInfo { hasNextPage endCursor }
           edges {
             permission
-            node { name url isPrivate }
+            node { id name url isPrivate }
           }
         }
       }
@@ -39,7 +39,7 @@ query($orgName: String!, $teamSlug: String!, $after: String) {
         pageInfo { hasNextPage endCursor }
         edges {
           permission
-          node { name url isPrivate }
+          node { id name url isPrivate }
         }
       }
     }
@@ -97,6 +97,7 @@ class TeamRepositoriesStream(GitHubGraphQLMixin, Stream):
                     "items": {
                         "type": "object",
                         "properties": {
+                            "id": {"type": "string"},
                             "permission": {"type": "string"},
                             "name": {"type": "string"},
                             "url": {"type": "string"},
@@ -154,7 +155,12 @@ class TeamRepositoriesStream(GitHubGraphQLMixin, Stream):
     @staticmethod
     def _extract_repos(edges: list) -> List[Mapping[str, Any]]:
         return [
-            {"permission": e["permission"], "name": e["node"]["name"],
-             "url": e["node"]["url"], "isPrivate": e["node"]["isPrivate"]}
+            {
+                "id": e["node"]["id"],
+                "permission": e["permission"],
+                "name": e["node"]["name"],
+                "url": e["node"]["url"],
+                "isPrivate": e["node"]["isPrivate"],
+            }
             for e in edges
         ]

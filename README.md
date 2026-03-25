@@ -30,7 +30,7 @@ One record per team with all team metadata and a `repositories` array containing
 
 **Team fields:** `id`, `name`, `slug`, `combinedSlug`, `description`, `createdAt`, `updatedAt`, `avatarUrl`, `privacy`, `notificationSetting`, `url`, `membersUrl`, `reviewRequestDelegationEnabled`, `reviewRequestDelegationAlgorithm`, `reviewRequestDelegationMemberCount`, `reviewRequestDelegationNotifyTeam`, `viewerCanAdminister`
 
-**Repo fields (per entry):** `permission`, `name`, `url`, `isPrivate`
+**Repo fields (per entry):** `id`, `permission`, `name`, `url`, `isPrivate`
 
 **Implementation:** Custom Python stream with hybrid approach -- one bulk nested query fetches teams + first 100 repos per team, then conditional follow-up pagination only for teams with >100 repos.
 
