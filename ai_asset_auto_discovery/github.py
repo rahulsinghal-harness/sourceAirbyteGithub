@@ -204,13 +204,15 @@ class GitHubGraphQLClient:
                 fetched = await self._fetch_files(owner, name, branch, pending_paths)
                 files.update(fetched)
 
-                # For marketplace repos, after fetching plugin.json files from subdirs,
-                # we may need another round to get skills/agents/commands in each subdir
-                if is_marketplace:
-                    extra = self._marketplace_follow_up_paths(files)
-                    if extra:
-                        fetched2 = await self._fetch_files(owner, name, branch, extra)
-                        files.update(fetched2)
+            # For marketplace repos, probe plugin subdirs for skills/agents/commands
+            if is_marketplace:
+                marketplace_content = files.get(".claude-plugin/marketplace.json", "")
+                child_paths = await self._probe_marketplace_children(
+                    owner, name, branch, marketplace_content
+                )
+                if child_paths:
+                    fetched2 = await self._fetch_files(owner, name, branch, child_paths)
+                    files.update(fetched2)
 
             results.append(RepoFiles(owner=owner, name=name, branch=branch, files=files))
 
@@ -235,35 +237,75 @@ class GitHubGraphQLClient:
             if entry["type"] == "tree":
                 pending.append(f"{dir_path}/{entry['name']}/SKILL.md")
 
-    def _marketplace_pending_paths(self, marketplace_content: str) -> list[str]:
-        """Parse marketplace.json and return paths to probe for each plugin subdir."""
+    @staticmethod
+    def _normalize_source(source: str) -> str:
+        """Strip './' prefix and trailing '/' from marketplace plugin source paths."""
+        if source.startswith("./"):
+            source = source[2:]
+        return source.strip("/")
+
+    def _parse_marketplace_sources(self, marketplace_content: str) -> list[str]:
+        """Parse marketplace.json and return normalized source paths."""
         try:
             data = json.loads(marketplace_content)
         except json.JSONDecodeError:
             return []
-        paths = []
+        sources = []
         for plugin_entry in data.get("plugins", []):
             source = plugin_entry.get("source", "")
             if not source or source.startswith("http") or source.startswith("npm:"):
                 continue
-            source = source.strip("/")
-            paths.append(f"{source}/.claude-plugin/plugin.json")
-            # We'll need dir listings too, but GraphQL fetch_files only gets blobs.
-            # So we request the dirs as separate probes in the follow-up step.
-        return paths
+            sources.append(self._normalize_source(source))
+        return sources
 
-    def _marketplace_follow_up_paths(self, files: dict[str, str]) -> list[str]:
-        """After fetching plugin.json for marketplace subdirs, build skill/agent/command paths.
+    def _marketplace_pending_paths(self, marketplace_content: str) -> list[str]:
+        """Parse marketplace.json and return plugin.json paths to probe for each plugin subdir."""
+        sources = self._parse_marketplace_sources(marketplace_content)
+        return [f"{source}/.claude-plugin/plugin.json" for source in sources]
 
-        Since we can't list directories via the blob-fetch query, we re-probe
-        the marketplace.json to discover subdirs and request their contents.
-        For now, this fetches plugin.json contents — actual dir listing for
-        children requires a separate tree query if the marketplace has many plugins.
-        """
-        # For simplicity, assume marketplace plugin subdirs may have a standard structure.
-        # A full implementation would do a tree query per subdir here.
-        # TODO: implement tree listing for marketplace plugin subdirs when needed
-        return []
+    async def _probe_marketplace_children(
+        self, owner: str, name: str, branch: str, marketplace_content: str
+    ) -> list[str]:
+        """List skills/agents/commands dirs for each marketplace plugin subdir via batched tree query."""
+        sources = self._parse_marketplace_sources(marketplace_content)
+        if not sources:
+            return []
+
+        aliases = []
+        alias_map: dict[str, tuple[str, str]] = {}
+        for i, source in enumerate(sources):
+            for j, subdir in enumerate(["skills", "agents", "commands"]):
+                alias = f"mp_{i}_{j}"
+                path = f"{source}/{subdir}"
+                alias_map[alias] = (source, subdir)
+                aliases.append(
+                    f'{alias}: object(expression: "{branch}:{path}") {{ {_TREE_FIELDS} }}'
+                )
+
+        if not aliases:
+            return []
+
+        query = (
+            f'query {{ repository(owner: "{owner}", name: "{name}") {{\n'
+            + "\n".join(aliases)
+            + "\n}}"
+        )
+        data = await self._query(query)
+        repo_data = data.get("repository", {})
+
+        pending: list[str] = []
+        for alias, (source, subdir) in alias_map.items():
+            tree = repo_data.get(alias)
+            if not tree or "entries" not in tree:
+                continue
+            for entry in tree["entries"]:
+                if subdir == "skills" and entry["type"] == "tree":
+                    pending.append(f"{source}/{subdir}/{entry['name']}/SKILL.md")
+                elif entry["type"] == "blob" and entry["name"].endswith(".md"):
+                    pending.append(f"{source}/{subdir}/{entry['name']}")
+
+        logger.info("Marketplace children to fetch: %s", pending)
+        return pending
 
     async def _fetch_files(self, owner: str, name: str, branch: str,
                            paths: list[str]) -> dict[str, str]:

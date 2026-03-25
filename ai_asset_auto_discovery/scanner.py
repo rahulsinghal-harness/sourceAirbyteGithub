@@ -90,6 +90,8 @@ def _scan_marketplace(repo_name: str, files: dict[str, str], assets: list[AIAsse
         source = plugin_entry.get("source", "")
         if not source or source.startswith("http") or source.startswith("npm:"):
             continue
+        if source.startswith("./"):
+            source = source[2:]
         source = source.strip("/")
         _scan_plugin_subtree(repo_name, source, files, assets, marketplace_meta=plugin_entry, branch=branch)
 
@@ -107,7 +109,6 @@ def _scan_plugin_subtree(
 
     plugin_name = None
     plugin_id = None
-
     if plugin_content:
         plugin_asset = _parse_plugin_json(repo_name, plugin_json_path, plugin_content, branch)
         if plugin_asset:
