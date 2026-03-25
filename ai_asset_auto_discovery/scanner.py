@@ -19,8 +19,7 @@ _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
 def scan_repo(repo_name: str, files: dict[str, str], branch: str = "main") -> list[AIAsset]:
     assets: list[AIAsset] = []
-
-    is_plugin = ".claude-plugin/plugin.json" in files
+    is_plugin = ".claude-plugin/plugin.json" in file
     is_marketplace = ".claude-plugin/marketplace.json" in files
 
     if ".claude/settings.json" in files:
@@ -109,6 +108,7 @@ def _scan_plugin_subtree(
 
     plugin_name = None
     plugin_id = None
+    plugin_asset = None
     if plugin_content:
         plugin_asset = _parse_plugin_json(repo_name, plugin_json_path, plugin_content, branch)
         if plugin_asset:
@@ -120,7 +120,7 @@ def _scan_plugin_subtree(
             assets.append(plugin_asset)
             plugin_name = plugin_asset.name
             plugin_id = plugin_asset.asset_id
-    elif marketplace_meta:
+    if not plugin_asset and marketplace_meta:
         name = marketplace_meta.get("name", os.path.basename(prefix) if prefix else "unknown")
         plugin_asset = AIAsset(
             asset_type="plugin",

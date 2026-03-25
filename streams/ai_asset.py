@@ -141,7 +141,7 @@ class AIAssetStream(Stream):
                 "discovered_at": scanned_at,
                 "description": asset.description,
                 "asset_class": "ai_asset",
-                "parent_asset_id": asset.parent_id,
+                "parent_asset_id": f"id_{asset.parent_id}" if asset.parent_id else None,
                 "relationship": asset.relationship,
                 "external_ref": asset.external_ref,
                 "author": asset.metadata.get("author", ""),
