@@ -19,7 +19,7 @@ _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
 def scan_repo(repo_name: str, files: dict[str, str], branch: str = "main") -> list[AIAsset]:
     assets: list[AIAsset] = []
-    is_plugin = ".claude-plugin/plugin.json" in file
+    is_plugin = ".claude-plugin/plugin.json" in files
     is_marketplace = ".claude-plugin/marketplace.json" in files
 
     if ".claude/settings.json" in files:
