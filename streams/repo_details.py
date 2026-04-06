@@ -23,6 +23,7 @@ query($orgName: String!, $after: String) {
         languages(first: 20) { edges { size node { name } } }
         readme: object(expression: "HEAD:README.md") { ... on Blob { text byteSize isBinary } }
         codeowners: object(expression: "HEAD:CODEOWNERS") { ... on Blob { text byteSize isBinary } }
+        hasAgentsFile: object(expression: "HEAD:Agents.md") { id }
       }
       pageInfo { hasNextPage endCursor }
     }
@@ -75,6 +76,10 @@ SCHEMA = {
                 "byteSize": {"type": ["integer", "null"]},
                 "isBinary": {"type": ["boolean", "null"]},
             },
+        },
+        "hasAgentsFile": {
+            "type": ["object", "null"],
+            "properties": {"id": {"type": "string"}},
         },
         "languages": {
             "type": "array",
