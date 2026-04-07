@@ -36,6 +36,16 @@ One record per team with all team metadata and a `repositories` array containing
 
 **Cost:** ~101 points for up to 100 teams in a single call, plus ~1 point per follow-up call.
 
+### `issues` (full_refresh + incremental)
+
+Issues in the org from GitHub GraphQL **`search`** (`type: ISSUE`), ordered **`sort:updated-desc`**, **50** results per page, **at most 1000** issues per sync (the most recently updated in the search window).
+
+**Full refresh / first incremental run:** `updated:>= max(start_date UTC date, today UTC − 14 days)`.
+
+**Incremental:** Cursor **`updatedAt`**; search uses `max(start_date, cursor date)`; client filter matches **`repo_details`**: emit rows with **`updatedAt` ≥ cursor** (see [docs/issues_stream.md](docs/issues_stream.md)).
+
+**Fields:** `id`, `number`, `createdAt`, `updatedAt`, `closedAt`, `url`, `resourcePath`, `title`, `body`, `author` (`{ login }`), `state`, `issueType` (`{ name }`), `repository` (`id`, `name`).
+
 ## Configuration
 
 | Field | Type | Required | Description |
@@ -146,6 +156,18 @@ POST /api/v1/integrations
         },
         "sync_mode": "full_refresh",
         "destination_sync_mode": "overwrite"
+      },
+      {
+        "stream": {
+          "name": "issues",
+          "json_schema": "<FROM STEP 1 DISCOVERY>",
+          "supported_sync_modes": ["full_refresh", "incremental"],
+          "source_defined_cursor": true,
+          "default_cursor_field": ["updatedAt"]
+        },
+        "sync_mode": "incremental",
+        "destination_sync_mode": "append",
+        "cursor_field": ["updatedAt"]
       }
     ]
   },
@@ -159,5 +181,5 @@ POST /api/v1/integrations
 
 - **Base image:** `airbyte/source-declarative-manifest:6.54.6`
 - **Declarative streams:** `repo_details`, `releases_details` (YAML manifest)
-- **Custom Python stream:** `team_repositories` (hybrid nested query + pagination)
+- **Custom Python streams:** `team_repositories` (hybrid nested query + pagination), `issues` (GraphQL search + pagination)
 - **Docker image:** `rahulsinghalharness/sourceairbytegithub:0.0.2`
