@@ -12,6 +12,7 @@ from auth import create_installation_token_sync, TOKEN_CACHE_TTL
 from streams.repo_details import RepoDetailsStream
 from streams.releases_details import ReleasesDetailsStream
 from streams.team_repositories import TeamRepositoriesStream
+from streams.issues import IssuesStream
 from streams.ai_asset import AIAssetStream, AIAssetScanCache, STREAM_TYPE_MAP
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ class GitHubSource(AbstractSource):
                 RepoDetailsStream(config=config),
                 ReleasesDetailsStream(config=config),
                 TeamRepositoriesStream(config=config),
+                IssuesStream(config=config),
             ])
 
         scan_cache = AIAssetScanCache()
