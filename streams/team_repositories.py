@@ -125,14 +125,25 @@ class TeamRepositoriesStream(GitHubGraphQLMixin, Stream):
             teams_data = resp["data"]["organization"]["teams"]
 
             for team in teams_data["nodes"]:
+                if not team:
+                    continue
                 if team.get("updatedAt") and team["updatedAt"] < start_date:
                     continue
-                repos = self._extract_repos(team["repositories"]["edges"])
 
-                if team["repositories"]["pageInfo"]["hasNextPage"]:
-                    repos.extend(self._fetch_remaining_repos(
-                        org, team["slug"], team["repositories"]["pageInfo"]["endCursor"],
-                    ))
+                repo_conn = team.get("repositories")
+                if repo_conn is None:
+                    repos: List[Mapping[str, Any]] = []
+                else:
+                    repos = self._extract_repos(repo_conn.get("edges"))
+                    page_info = repo_conn.get("pageInfo") or {}
+                    if page_info.get("hasNextPage") and page_info.get("endCursor"):
+                        slug = team.get("slug")
+                        if slug:
+                            repos.extend(
+                                self._fetch_remaining_repos(
+                                    org, slug, page_info["endCursor"],
+                                )
+                            )
 
                 record = {f: team.get(f) for f in TEAM_FIELDS}
                 record["repositories"] = repos
@@ -146,21 +157,38 @@ class TeamRepositoriesStream(GitHubGraphQLMixin, Stream):
         has_next = True
         while has_next:
             resp = self._graphql(FOLLOWUP_QUERY, {"orgName": org, "teamSlug": team_slug, "after": cursor})
-            repo_data = resp["data"]["organization"]["team"]["repositories"]
-            repos.extend(self._extract_repos(repo_data["edges"]))
-            has_next = repo_data["pageInfo"]["hasNextPage"]
-            cursor = repo_data["pageInfo"]["endCursor"]
+            org_node = resp.get("data", {}).get("organization") or {}
+            team_obj = org_node.get("team")
+            if not team_obj:
+                break
+            repo_data = team_obj.get("repositories")
+            if repo_data is None:
+                break
+            repos.extend(self._extract_repos(repo_data.get("edges")))
+            page_info = repo_data.get("pageInfo") or {}
+            has_next = bool(page_info.get("hasNextPage"))
+            end = page_info.get("endCursor")
+            if not end:
+                break
+            cursor = end
         return repos
 
     @staticmethod
-    def _extract_repos(edges: list) -> List[Mapping[str, Any]]:
-        return [
-            {
-                "id": e["node"]["id"],
-                "permission": e["permission"],
-                "name": e["node"]["name"],
-                "url": e["node"]["url"],
-                "isPrivate": e["node"]["isPrivate"],
-            }
-            for e in edges
-        ]
+    def _extract_repos(edges: Optional[list]) -> List[Mapping[str, Any]]:
+        if not edges:
+            return []
+        out: List[Mapping[str, Any]] = []
+        for e in edges:
+            if not e:
+                continue
+            node = e.get("node")
+            if not node:
+                continue
+            out.append({
+                "id": node["id"],
+                "permission": e.get("permission"),
+                "name": node["name"],
+                "url": node["url"],
+                "isPrivate": node["isPrivate"],
+            })
+        return out
