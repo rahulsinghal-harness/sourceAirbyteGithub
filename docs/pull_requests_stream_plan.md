@@ -83,6 +83,7 @@ query($orgName: String!, $repoCursor: String) {
             merged lastEditedAt
             author { login }
             mergedBy { login }
+            repository { id name }
           }
         }
       }
@@ -92,17 +93,17 @@ query($orgName: String!, $repoCursor: String) {
 ```
 
 - 10 PRs inline (not 25) because 50 repos × 25 PRs exceeds GitHub's response size limit
-- Repo `id` and `name` come from parent node — attached to each PR record in code
+- `repository { id name }` fetched inside the PR node itself (not from parent)
 
-### Follow-up Query (single repo, 100 PRs per page)
+### Follow-up Query (single repo, 50 PRs per page)
 
 ```graphql
 query($orgName: String!, $repoName: String!, $prCursor: String) {
   organization(login: $orgName) {
     repository(name: $repoName) {
-      pullRequests(first: 100, after: $prCursor, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      pullRequests(first: 50, after: $prCursor, orderBy: {field: UPDATED_AT, direction: DESC}) {
         pageInfo { hasNextPage endCursor }
-        nodes { ...same PR fields... }
+        nodes { ...same PR fields including repository { id name }... }
       }
     }
   }

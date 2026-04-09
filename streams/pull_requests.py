@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 PAGE_SIZE_REPOS = 50
 PAGE_SIZE_PRS_INLINE = 10
-PAGE_SIZE_PRS_FOLLOWUP = 100
+PAGE_SIZE_PRS_FOLLOWUP = 50
 MAX_PRS_PER_REPO_PER_SYNC = 5000
 _LOOKBACK_DAYS = 30
 
@@ -35,6 +35,7 @@ _PR_FIELDS = """
     merged lastEditedAt
     author { login }
     mergedBy { login }
+    repository { id name }
 """
 
 BULK_QUERY = f"""
@@ -280,7 +281,7 @@ class PullRequestsStream(GitHubGraphQLMixin, Stream):
 
         # Process inline nodes
         for node in nodes:
-            rec, updated_iso = self._prepare_record(node, repo_id, repo_name)
+            rec, updated_iso = self._prepare_record(node)
             if rec is None:
                 continue
             node_dt = _parse_github_dt(updated_iso)
@@ -296,7 +297,7 @@ class PullRequestsStream(GitHubGraphQLMixin, Stream):
         # Paginate for more PRs if needed
         if not reached_start and has_next and end_cursor and emitted < MAX_PRS_PER_REPO_PER_SYNC:
             result = yield from self._fetch_more_prs(
-                org, repo_name, end_cursor, repo_id,
+                org, repo_name, end_cursor,
                 start_dt, MAX_PRS_PER_REPO_PER_SYNC - emitted,
                 stop_at_updated=None,
             )
@@ -356,7 +357,7 @@ class PullRequestsStream(GitHubGraphQLMixin, Stream):
         need_more_incremental = True
 
         for node in nodes:
-            rec, updated_iso = self._prepare_record(node, repo_id, repo_name)
+            rec, updated_iso = self._prepare_record(node)
             if rec is None:
                 continue
             node_dt = _parse_github_dt(updated_iso)
@@ -371,7 +372,7 @@ class PullRequestsStream(GitHubGraphQLMixin, Stream):
         # If inline wasn't enough to reach stored cursor, paginate more
         if need_more_incremental and inline_has_next and inline_end_cursor:
             result = yield from self._fetch_more_prs(
-                org, repo_name, inline_end_cursor, repo_id,
+                org, repo_name, inline_end_cursor,
                 start_dt=None,
                 max_records=MAX_PRS_PER_REPO_PER_SYNC - emitted,
                 stop_at_updated=stored_updated_dt,
@@ -382,7 +383,7 @@ class PullRequestsStream(GitHubGraphQLMixin, Stream):
 
         # Step 2: Resume backfill from stored backfill_cursor
         backfill_result = yield from self._fetch_more_prs(
-            org, repo_name, backfill_cursor, repo_id,
+            org, repo_name, backfill_cursor,
             start_dt=start_dt,
             max_records=MAX_PRS_PER_REPO_PER_SYNC - emitted,
             stop_at_updated=None,
@@ -441,7 +442,7 @@ class PullRequestsStream(GitHubGraphQLMixin, Stream):
         hit_cursor = False
 
         for node in nodes:
-            rec, updated_iso = self._prepare_record(node, repo_id, repo_name)
+            rec, updated_iso = self._prepare_record(node)
             if rec is None:
                 continue
             node_dt = _parse_github_dt(updated_iso)
@@ -456,7 +457,7 @@ class PullRequestsStream(GitHubGraphQLMixin, Stream):
         # Paginate if inline wasn't enough to reach cursor
         if not hit_cursor and has_next and end_cursor:
             result = yield from self._fetch_more_prs(
-                org, repo_name, end_cursor, repo_id,
+                org, repo_name, end_cursor,
                 start_dt=None,
                 max_records=MAX_PRS_PER_REPO_PER_SYNC - emitted,
                 stop_at_updated=stored_updated_dt,
@@ -482,16 +483,11 @@ class PullRequestsStream(GitHubGraphQLMixin, Stream):
         org: str,
         repo_name: str,
         after_cursor: str,
-        repo_id: str,
         start_dt: Optional[datetime],
         max_records: int,
         stop_at_updated: Optional[datetime],
     ) -> Dict[str, Any]:
-        """Paginate PRs via FOLLOWUP_QUERY.
-
-        Returns dict with: emitted, max_updated, min_updated, reached_start,
-        has_next, end_cursor.
-        """
+        """Paginate PRs via FOLLOWUP_QUERY."""
         emitted = 0
         max_updated: Optional[str] = None
         min_updated: Optional[str] = None
@@ -527,7 +523,7 @@ class PullRequestsStream(GitHubGraphQLMixin, Stream):
             end_cursor_val = page_info.get("endCursor")
 
             for node in nodes:
-                rec, updated_iso = self._prepare_record(node, repo_id, repo_name)
+                rec, updated_iso = self._prepare_record(node)
                 if rec is None:
                     continue
                 node_dt = _parse_github_dt(updated_iso)
@@ -568,15 +564,10 @@ class PullRequestsStream(GitHubGraphQLMixin, Stream):
     # ── Record preparation ───────────────────────────────────────────────
 
     @staticmethod
-    def _prepare_record(
-        node: Any, repo_id: str, repo_name: str
-    ) -> tuple:
-        """Validate node and attach repo info. Returns (record, updatedAt) or (None, None)."""
+    def _prepare_record(node: Any) -> tuple:
         if not isinstance(node, dict) or not node.get("id"):
             return None, None
         updated_at = node.get("updatedAt")
         if not updated_at:
             return None, None
-        record = dict(node)
-        record["repository"] = {"id": repo_id, "name": repo_name}
-        return record, updated_at
+        return node, updated_at
