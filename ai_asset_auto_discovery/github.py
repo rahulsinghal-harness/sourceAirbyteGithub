@@ -16,9 +16,9 @@ GRAPHQL_URL = "https://api.github.com/graphql"
 _BLOB_FIELDS = "... on Blob { text }"
 _TREE_FIELDS = "... on Tree { entries { name type } }"
 
-# Probes 3 fixed files + 6 directory listings per repo.
+# Probes 3 fixed files + 3 directory listings per repo.
 # For non-plugin repos: .claude/ subdirs have standalone definitions.
-# For plugin repos: root-level skills/agents/commands hold plugin children.
+# For plugin/marketplace repos: follow-up calls discover children via _probe_plugin_children.
 _REPO_PROBE_BODY = """
     name
     owner { login }
@@ -29,9 +29,6 @@ _REPO_PROBE_BODY = """
     claudeCommands: object(expression: "HEAD:.claude/commands") { %(tree)s }
     claudeSkills: object(expression: "HEAD:.claude/skills") { %(tree)s }
     claudeAgents: object(expression: "HEAD:.claude/agents") { %(tree)s }
-    rootSkills: object(expression: "HEAD:skills") { %(tree)s }
-    rootAgents: object(expression: "HEAD:agents") { %(tree)s }
-    rootCommands: object(expression: "HEAD:commands") { %(tree)s }
 """ % {"blob": _BLOB_FIELDS, "tree": _TREE_FIELDS}
 
 _ORG_PROBE_QUERY = """
@@ -184,14 +181,6 @@ class GitHubGraphQLClient:
                 self._collect_dir_entries(node, "claudeAgents", ".claude/agents",
                                          pending_paths, blob_suffix=".md")
 
-            # Plugin children at root level
-            if is_plugin:
-                self._collect_skill_entries(node, "rootSkills", "skills", pending_paths)
-                self._collect_dir_entries(node, "rootAgents", "agents",
-                                         pending_paths, blob_suffix=".md")
-                self._collect_dir_entries(node, "rootCommands", "commands",
-                                         pending_paths, blob_suffix=".md")
-
             # Marketplace: parse to discover plugin subdirs, probe them in follow-up
             if is_marketplace:
                 marketplace_paths = self._marketplace_pending_paths(files[".claude-plugin/marketplace.json"])
@@ -201,18 +190,28 @@ class GitHubGraphQLClient:
                 continue
 
             if pending_paths:
-                fetched = await self._fetch_files(owner, name, branch, pending_paths)
+                fetched = await self._fetch_files(owner, name, branch, pending_paths, include_history=True)
                 files.update(fetched)
+
+            # For standalone plugin repos, probe skills/agents/commands (respecting custom paths)
+            if is_plugin and not is_marketplace:
+                plugin_content = files.get(".claude-plugin/plugin.json", "")
+                child_paths = await self._probe_plugin_children(
+                    owner, name, branch, "", plugin_content
+                )
+                if child_paths:
+                    fetched2 = await self._fetch_files(owner, name, branch, child_paths, include_history=True)
+                    files.update(fetched2)
 
             # For marketplace repos, probe plugin subdirs for skills/agents/commands
             if is_marketplace:
                 marketplace_content = files.get(".claude-plugin/marketplace.json", "")
                 child_paths = await self._probe_marketplace_children(
-                    owner, name, branch, marketplace_content
+                    owner, name, branch, marketplace_content, files
                 )
                 if child_paths:
-                    fetched2 = await self._fetch_files(owner, name, branch, child_paths)
-                    files.update(fetched2)
+                    fetched3 = await self._fetch_files(owner, name, branch, child_paths, include_history=True)
+                    files.update(fetched3)
 
             results.append(RepoFiles(owner=owner, name=name, branch=branch, files=files))
 
@@ -263,24 +262,200 @@ class GitHubGraphQLClient:
         sources = self._parse_marketplace_sources(marketplace_content)
         return [f"{source}/.claude-plugin/plugin.json" for source in sources]
 
-    async def _probe_marketplace_children(
-        self, owner: str, name: str, branch: str, marketplace_content: str
+    @staticmethod
+    def _parse_custom_dirs(plugin_content: str, prefix: str) -> dict[str, list[str]]:
+        """Parse plugin.json and return custom directory paths per component type.
+
+        Returns a dict like {"skills": ["custom/skills/"], "agents": ["agents/feature-dev/"], ...}.
+        If a field is absent, it won't be in the dict (caller should fall back to defaults).
+        If a field is present, only the declared paths are returned (replaces defaults).
+        """
+        if not plugin_content:
+            return {}
+        try:
+            data = json.loads(plugin_content)
+        except json.JSONDecodeError:
+            return {}
+
+        result: dict[str, list[str]] = {}
+        for field in ("skills", "agents", "commands"):
+            explicit = data.get(field)
+            if explicit is None:
+                continue
+            if isinstance(explicit, str):
+                explicit = [explicit]
+            if not isinstance(explicit, list):
+                continue
+            dirs: list[str] = []
+            for entry in explicit:
+                entry = str(entry)
+                if entry.startswith("./"):
+                    entry = entry[2:]
+                full = f"{prefix}/{entry}" if prefix else entry
+                if full.endswith(".md"):
+                    # Explicit file path — we'll fetch it directly, not via tree listing
+                    # These are handled separately
+                    continue
+                if not full.endswith("/"):
+                    full += "/"
+                dirs.append(full)
+            if dirs:
+                result[field] = dirs
+        return result
+
+    @staticmethod
+    def _collect_explicit_files(plugin_content: str, prefix: str) -> list[str]:
+        """Extract explicitly declared .md file paths from plugin.json (not directories)."""
+        if not plugin_content:
+            return []
+        try:
+            data = json.loads(plugin_content)
+        except json.JSONDecodeError:
+            return []
+
+        paths: list[str] = []
+        for field in ("skills", "agents", "commands"):
+            explicit = data.get(field)
+            if explicit is None:
+                continue
+            if isinstance(explicit, str):
+                explicit = [explicit]
+            if not isinstance(explicit, list):
+                continue
+            for entry in explicit:
+                entry = str(entry)
+                if entry.startswith("./"):
+                    entry = entry[2:]
+                full = f"{prefix}/{entry}" if prefix else entry
+                if full.endswith(".md"):
+                    paths.append(full)
+        return paths
+
+    async def _probe_plugin_children(
+        self, owner: str, name: str, branch: str, prefix: str, plugin_content: str
     ) -> list[str]:
-        """List skills/agents/commands dirs for each marketplace plugin subdir via batched tree query."""
+        """Probe skills/agents/commands for a single plugin, respecting custom paths from plugin.json.
+
+        Also checks for README.md at the plugin root.
+        """
+        custom_dirs = self._parse_custom_dirs(plugin_content, prefix)
+        explicit_files = self._collect_explicit_files(plugin_content, prefix)
+
+        # Build tree listing aliases for directories we need to scan
+        aliases = []
+        alias_map: dict[str, tuple[str, str]] = {}  # alias → (dir_path, component_type)
+        alias_idx = 0
+
+        for comp_type in ("skills", "agents", "commands"):
+            if comp_type in custom_dirs:
+                dirs = custom_dirs[comp_type]
+            else:
+                # Default directory
+                default = f"{prefix}/{comp_type}" if prefix else comp_type
+                dirs = [default + "/"]
+
+            for dir_path in dirs:
+                clean = dir_path.rstrip("/")
+                alias = f"pc_{alias_idx}"
+                alias_idx += 1
+                alias_map[alias] = (clean, comp_type)
+                aliases.append(
+                    f'{alias}: object(expression: "{branch}:{clean}") {{ {_TREE_FIELDS} }}'
+                )
+
+        # Also check README.md at plugin root
+        readme_path = f"{prefix}/README.md" if prefix else "README.md"
+        readme_alias = f"pc_{alias_idx}"
+        aliases.append(
+            f'{readme_alias}: object(expression: "{branch}:{readme_path}") {{ {_BLOB_FIELDS} }}'
+        )
+
+        if not aliases:
+            return explicit_files
+
+        query = (
+            f'query {{ repository(owner: "{owner}", name: "{name}") {{\n'
+            + "\n".join(aliases)
+            + "\n}}"
+        )
+        data = await self._query(query)
+        repo_data = data.get("repository", {})
+
+        pending: list[str] = list(explicit_files)  # start with explicit .md files
+
+        for alias, (dir_path, comp_type) in alias_map.items():
+            tree = repo_data.get(alias)
+            if not tree or "entries" not in tree:
+                continue
+            for entry in tree["entries"]:
+                if comp_type == "skills" and entry["type"] == "tree":
+                    pending.append(f"{dir_path}/{entry['name']}/SKILL.md")
+                elif comp_type != "skills" and entry["type"] == "blob" and entry["name"].endswith(".md"):
+                    pending.append(f"{dir_path}/{entry['name']}")
+
+        # If README.md exists, include it so scanner can record the path
+        readme_blob = repo_data.get(readme_alias)
+        if readme_blob and "text" in readme_blob:
+            pending.append(readme_path)
+
+        logger.info("Plugin children to fetch (%s): %s", prefix or "root", pending)
+        return pending
+
+    async def _probe_marketplace_children(
+        self, owner: str, name: str, branch: str, marketplace_content: str,
+        files: dict[str, str] | None = None,
+    ) -> list[str]:
+        """List skills/agents/commands for each marketplace plugin, respecting custom paths from plugin.json."""
         sources = self._parse_marketplace_sources(marketplace_content)
         if not sources:
             return []
 
+        files = files or {}
+
+        # Build all tree listing aliases across all plugins in one batched query
         aliases = []
-        alias_map: dict[str, tuple[str, str]] = {}
-        for i, source in enumerate(sources):
-            for j, subdir in enumerate(["skills", "agents", "commands"]):
-                alias = f"mp_{i}_{j}"
-                path = f"{source}/{subdir}"
-                alias_map[alias] = (source, subdir)
-                aliases.append(
-                    f'{alias}: object(expression: "{branch}:{path}") {{ {_TREE_FIELDS} }}'
-                )
+        alias_map: dict[str, tuple[str, str, str]] = {}  # alias → (source, dir_path, comp_type)
+        readme_aliases: dict[str, str] = {}  # alias → readme_path
+        alias_idx = 0
+
+        for source in sources:
+            plugin_json_path = f"{source}/.claude-plugin/plugin.json"
+            plugin_content = files.get(plugin_json_path, "")
+            custom_dirs = self._parse_custom_dirs(plugin_content, source)
+            explicit_files = self._collect_explicit_files(plugin_content, source)
+
+            # Stash explicit files to collect later
+            if explicit_files:
+                # Store in alias_map under a special marker so we can collect them
+                for ef in explicit_files:
+                    alias = f"mp_{alias_idx}"
+                    alias_idx += 1
+                    alias_map[alias] = (source, ef, "__explicit__")
+
+            for comp_type in ("skills", "agents", "commands"):
+                if comp_type in custom_dirs:
+                    dirs = custom_dirs[comp_type]
+                else:
+                    default = f"{source}/{comp_type}"
+                    dirs = [default + "/"]
+
+                for dir_path in dirs:
+                    clean = dir_path.rstrip("/")
+                    alias = f"mp_{alias_idx}"
+                    alias_idx += 1
+                    alias_map[alias] = (source, clean, comp_type)
+                    aliases.append(
+                        f'{alias}: object(expression: "{branch}:{clean}") {{ {_TREE_FIELDS} }}'
+                    )
+
+            # README check per plugin
+            readme_path = f"{source}/README.md"
+            readme_alias = f"mp_{alias_idx}"
+            alias_idx += 1
+            readme_aliases[readme_alias] = readme_path
+            aliases.append(
+                f'{readme_alias}: object(expression: "{branch}:{readme_path}") {{ {_BLOB_FIELDS} }}'
+            )
 
         if not aliases:
             return []
@@ -294,32 +469,65 @@ class GitHubGraphQLClient:
         repo_data = data.get("repository", {})
 
         pending: list[str] = []
-        for alias, (source, subdir) in alias_map.items():
+
+        for alias, (source, dir_path, comp_type) in alias_map.items():
+            if comp_type == "__explicit__":
+                # dir_path is actually the explicit file path
+                pending.append(dir_path)
+                continue
             tree = repo_data.get(alias)
             if not tree or "entries" not in tree:
                 continue
             for entry in tree["entries"]:
-                if subdir == "skills" and entry["type"] == "tree":
-                    pending.append(f"{source}/{subdir}/{entry['name']}/SKILL.md")
-                elif entry["type"] == "blob" and entry["name"].endswith(".md"):
-                    pending.append(f"{source}/{subdir}/{entry['name']}")
+                if comp_type == "skills" and entry["type"] == "tree":
+                    pending.append(f"{dir_path}/{entry['name']}/SKILL.md")
+                elif comp_type != "skills" and entry["type"] == "blob" and entry["name"].endswith(".md"):
+                    pending.append(f"{dir_path}/{entry['name']}")
+
+        # Include README.md files that exist
+        for alias, readme_path in readme_aliases.items():
+            readme_blob = repo_data.get(alias)
+            if readme_blob and "text" in readme_blob:
+                pending.append(readme_path)
 
         logger.info("Marketplace children to fetch: %s", pending)
         return pending
 
-    async def _fetch_files(self, owner: str, name: str, branch: str,
-                           paths: list[str]) -> dict[str, str]:
-        """Batch-fetch file contents via aliased GraphQL object expressions."""
+    async def _fetch_files(
+        self, owner: str, name: str, branch: str, paths: list[str],
+        include_history: bool = False,
+    ) -> dict[str, str]:
+        """Batch-fetch file contents via aliased GraphQL object expressions.
+
+        If include_history is True, also fetches last commit metadata per file.
+        History data is stored under a special key: ``__history__/<path>``.
+        """
         result: dict[str, str] = {}
-        # Batch ~30 files per query to stay under GraphQL complexity limits
-        for i in range(0, len(paths), 30):
-            batch = paths[i:i + 30]
+        # Reduce batch size when fetching history to stay under complexity limits
+        batch_size = 15 if include_history else 30
+        for i in range(0, len(paths), batch_size):
+            batch = paths[i:i + batch_size]
             aliases = []
             alias_map: dict[str, str] = {}
             for j, path in enumerate(batch):
                 alias = f"f_{j}"
                 alias_map[alias] = path
                 aliases.append(f'{alias}: object(expression: "{branch}:{path}") {{ {_BLOB_FIELDS} }}')
+
+            if include_history:
+                # Piggyback git history queries using aliased ref lookups
+                for j, path in enumerate(batch):
+                    aliases.append(
+                        f'h_{j}: ref(qualifiedName: "refs/heads/{branch}") {{'
+                        f'  target {{'
+                        f'    ... on Commit {{'
+                        f'      history(first: 1, path: "{path}") {{'
+                        f'        nodes {{ author {{ name email }} committedDate message }}'
+                        f'      }}'
+                        f'    }}'
+                        f'  }}'
+                        f'}}'
+                    )
 
             query = (
                 f'query {{ repository(owner: "{owner}", name: "{name}") {{\n'
@@ -332,6 +540,21 @@ class GitHubGraphQLClient:
                 blob = repo_data.get(alias)
                 if blob and "text" in blob:
                     result[path] = blob["text"]
+
+            if include_history:
+                for j, path in enumerate(batch):
+                    hist_data = repo_data.get(f"h_{j}")
+                    if hist_data:
+                        target = hist_data.get("target", {})
+                        nodes = target.get("history", {}).get("nodes", [])
+                        if nodes:
+                            commit = nodes[0]
+                            result[f"__history__/{path}"] = json.dumps({
+                                "author_name": commit.get("author", {}).get("name", ""),
+                                "author_email": commit.get("author", {}).get("email", ""),
+                                "committed_date": commit.get("committedDate", ""),
+                                "message": commit.get("message", ""),
+                            })
 
         return result
 
