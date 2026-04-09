@@ -131,7 +131,7 @@ query($orgName: String!, $repoName: String!, $prCursor: String) {
 | No new PRs in a repo | Phase 2 stops on first inline page, 0 emitted |
 | Rate limit mid-sync | Save completed repos, resume next sync |
 | PR updated during backfill | Caught by incremental check at start of each phase 1 sync |
-| endCursor drift between syncs (DESC) | Tiny risk of duplicates during backfill (upsert safe), zero gaps once phase 2 |
+| endCursor drift between syncs (DESC) | No duplicates, no gaps. Cursor is value-based (encodes `updatedAt` + node ID), so position shifts don't affect it. PRs that move up (got updated) are caught by the incremental check at the start of each sync. |
 | Back-to-back sync (no changes) | 0 PRs re-emitted |
 
 ## Files Changed
