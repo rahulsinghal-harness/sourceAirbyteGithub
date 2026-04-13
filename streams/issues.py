@@ -21,7 +21,7 @@ from streams.github_graphql import GitHubGraphQLMixin
 
 logger = logging.getLogger(__name__)
 
-PAGE_SIZE_REPOS = 50
+PAGE_SIZE_REPOS = 25
 PAGE_SIZE_ISSUES_INLINE = 10
 PAGE_SIZE_ISSUES_FOLLOWUP = 50
 MAX_ISSUES_PER_REPO_PER_SYNC = 5000
@@ -130,6 +130,7 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
     def __init__(self, config: Mapping[str, Any], **kwargs: Any):
         super().__init__(**kwargs)
         self._config = config
+        self._state: Dict[str, Any] = {}
         self._init_session(config)
 
     @property
@@ -140,15 +141,12 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
         return SCHEMA
 
     @property
-    def supports_incremental(self) -> bool:
-        return True
+    def state(self) -> Mapping[str, Any]:
+        return self._state
 
-    def get_updated_state(
-        self,
-        current_stream_state: Mapping[str, Any],
-        latest_record: Mapping[str, Any],
-    ) -> Mapping[str, Any]:
-        return current_stream_state
+    @state.setter
+    def state(self, value: Mapping[str, Any]) -> None:
+        self._state = dict(value) if value else {}
 
     # ── read_records ─────────────────────────────────────────────────────
 
@@ -164,6 +162,7 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
 
         state = dict(stream_state) if stream_state else {}
         repo_cursors: Dict[str, Dict[str, Any]] = dict(state.get("repo_cursors", {}))
+        self._state = {"repo_cursors": repo_cursors}
 
         repo_cursor: Optional[str] = None
         has_next_repos = True
@@ -202,8 +201,7 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
                 total_emitted, exc,
             )
 
-        state["repo_cursors"] = repo_cursors
-        self._state = state
+        # self._state already points at repo_cursors (live reference set before loop)
 
         logger.info("issues: emitted %d records total", total_emitted)
 
@@ -410,6 +408,7 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
         emitted = 0
         max_updated = stored_updated_at
         hit_cursor = False
+        anchor_emitted = False
 
         for node in nodes:
             rec, updated_iso = self._prepare_record(node)
@@ -418,6 +417,12 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
             node_dt = _parse_github_dt(updated_iso)
             if node_dt <= stored_updated_dt:
                 hit_cursor = True
+                # Re-emit the cursor-boundary record when nothing new,
+                # so recordCount > 0 and K8s agent persists our state.
+                if emitted == 0 and rec is not None:
+                    yield rec
+                    emitted += 1
+                    anchor_emitted = True
                 break
             yield rec
             emitted += 1
@@ -437,7 +442,7 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
 
         repo_cursors[repo_id] = {"updatedAt": max_updated}
 
-        if emitted > 0:
+        if emitted > 0 and not anchor_emitted:
             logger.info(
                 "issues: repo %s phase2 emitted %d new issues",
                 repo_name, emitted,
