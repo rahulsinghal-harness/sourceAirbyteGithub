@@ -15,6 +15,7 @@ from streams.team_repositories import TeamRepositoriesStream
 from streams.issues import IssuesStream
 from streams.pull_requests import PullRequestsStream
 from streams.commits import CommitsStream
+from streams.repo_stats import RepoStatsStream
 from streams.ai_asset import AIAssetStream, AIAssetScanCache, STREAM_TYPE_MAP
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,7 @@ class GitHubSource(AbstractSource):
                 IssuesStream(config=config),
                 PullRequestsStream(config=config),
                 CommitsStream(config=config),
+                RepoStatsStream(config=config),
             ])
 
         scan_cache = AIAssetScanCache()
