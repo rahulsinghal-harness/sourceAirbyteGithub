@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build image; use linux/amd64 (x86_64) when Docker buildx is available.
 set -e
-TAG="${1:-0.0.22}"
+TAG="${1:-0.0.38}"
 IMAGE="rahulsinghalharness/sourceairbytegithub"
 
 if docker buildx version &>/dev/null; then
