@@ -116,7 +116,6 @@ class TeamRepositoriesStream(GitHubGraphQLMixin, Stream):
         stream_state: Optional[Mapping[str, Any]] = None,
     ) -> Iterable[Mapping[str, Any]]:
         org = self._config["org_name"]
-        start_date = self._config.get("start_date", "1970-01-01T00:00:00Z")
         team_cursor = None
         has_next_teams = True
 
@@ -126,8 +125,6 @@ class TeamRepositoriesStream(GitHubGraphQLMixin, Stream):
 
             for team in teams_data["nodes"]:
                 if not team:
-                    continue
-                if team.get("updatedAt") and team["updatedAt"] < start_date:
                     continue
 
                 repo_conn = team.get("repositories")

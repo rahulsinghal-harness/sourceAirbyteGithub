@@ -1,5 +1,5 @@
 
-"""Org issues via nested org → repos → issues — incremental on updatedAt.
+"""Org pull requests via nested org → repos → pullRequests — incremental on updatedAt.
 
 Two-phase per-repo sync:
   Phase 1 (backfill): DESC from top, store endCursor, resume next sync, 5000 cap/repo/sync.
@@ -22,19 +22,19 @@ from streams.github_graphql import GitHubGraphQLMixin
 logger = logging.getLogger(__name__)
 
 PAGE_SIZE_REPOS = 25
-PAGE_SIZE_ISSUES_INLINE = 10
-PAGE_SIZE_ISSUES_FOLLOWUP = 50
-MAX_ISSUES_PER_REPO_PER_SYNC = 5000
+PAGE_SIZE_PRS_INLINE = 10
+PAGE_SIZE_PRS_FOLLOWUP = 50
+MAX_PRS_PER_REPO_PER_SYNC = 5000
 _LOOKBACK_DAYS = 30
 
 # ── GraphQL queries ──────────────────────────────────────────────────────────
 
-_ISSUE_FIELDS = """
-    id number createdAt updatedAt closedAt
-    url resourcePath title
+_PR_FIELDS = """
+    id number createdAt updatedAt closedAt mergedAt publishedAt
+    url resourcePath permalink title state isDraft closed locked
+    merged lastEditedAt
     author { login }
-    state
-    issueType { name }
+    mergedBy { login }
     repository { id name }
 """
 
@@ -46,10 +46,10 @@ query($orgName: String!, $repoCursor: String) {{
       nodes {{
         id
         name
-        issues(first: {PAGE_SIZE_ISSUES_INLINE}, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
+        pullRequests(first: {PAGE_SIZE_PRS_INLINE}, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
           pageInfo {{ hasNextPage endCursor }}
           nodes {{
-            {_ISSUE_FIELDS}
+            {_PR_FIELDS}
           }}
         }}
       }}
@@ -59,13 +59,13 @@ query($orgName: String!, $repoCursor: String) {{
 """
 
 FOLLOWUP_QUERY = f"""
-query($orgName: String!, $repoName: String!, $issueCursor: String) {{
+query($orgName: String!, $repoName: String!, $prCursor: String) {{
   organization(login: $orgName) {{
     repository(name: $repoName) {{
-      issues(first: {PAGE_SIZE_ISSUES_FOLLOWUP}, after: $issueCursor, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
+      pullRequests(first: {PAGE_SIZE_PRS_FOLLOWUP}, after: $prCursor, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
         pageInfo {{ hasNextPage endCursor }}
         nodes {{
-          {_ISSUE_FIELDS}
+          {_PR_FIELDS}
         }}
       }}
     }}
@@ -85,17 +85,25 @@ SCHEMA: Mapping[str, Any] = {
         "createdAt": {"type": "string"},
         "updatedAt": {"type": "string"},
         "closedAt": {"type": ["string", "null"]},
+        "mergedAt": {"type": ["string", "null"]},
+        "publishedAt": {"type": ["string", "null"]},
         "url": {"type": "string"},
         "resourcePath": {"type": "string"},
+        "permalink": {"type": "string"},
         "title": {"type": "string"},
+        "state": {"type": "string"},
+        "isDraft": {"type": "boolean"},
+        "closed": {"type": "boolean"},
+        "locked": {"type": "boolean"},
+        "merged": {"type": "boolean"},
+        "lastEditedAt": {"type": ["string", "null"]},
         "author": {
             "type": ["object", "null"],
             "properties": {"login": {"type": "string"}},
         },
-        "state": {"type": "string"},
-        "issueType": {
+        "mergedBy": {
             "type": ["object", "null"],
-            "properties": {"name": {"type": "string"}},
+            "properties": {"login": {"type": "string"}},
         },
         "repository": {
             "type": "object",
@@ -123,7 +131,7 @@ def _parse_github_dt(iso_z: str) -> datetime:
 # ── Stream ───────────────────────────────────────────────────────────────────
 
 
-class IssuesStream(GitHubGraphQLMixin, Stream):
+class PullRequestsStream(GitHubGraphQLMixin, Stream):
     primary_key = "id"
     cursor_field = "updatedAt"
 
@@ -135,7 +143,7 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
 
     @property
     def name(self) -> str:
-        return "issues"
+        return "pull_requests"
 
     def get_json_schema(self) -> Mapping[str, Any]:
         return SCHEMA
@@ -180,12 +188,12 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
                         continue
                     repo_id = repo_node["id"]
                     repo_name = repo_node["name"]
-                    issue_conn = repo_node.get("issues")
-                    if not issue_conn:
+                    pr_conn = repo_node.get("pullRequests")
+                    if not pr_conn:
                         continue
 
                     emitted = yield from self._process_repo(
-                        org, repo_id, repo_name, issue_conn,
+                        org, repo_id, repo_name, pr_conn,
                         repo_cursors, start_dt,
                     )
                     total_emitted += emitted
@@ -197,13 +205,13 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
 
         except Exception as exc:
             logger.warning(
-                "issues: stopping due to error (emitted %d so far): %s",
+                "pull_requests: stopping due to error (emitted %d so far): %s",
                 total_emitted, exc,
             )
 
         # self._state already points at repo_cursors (live reference set before loop)
 
-        logger.info("issues: emitted %d records total", total_emitted)
+        logger.info("pull_requests: emitted %d records total", total_emitted)
 
     # ── Per-repo processing ──────────────────────────────────────────────
 
@@ -212,45 +220,51 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
         org: str,
         repo_id: str,
         repo_name: str,
-        issue_conn: Dict[str, Any],
+        pr_conn: Dict[str, Any],
         repo_cursors: Dict[str, Dict[str, Any]],
         start_dt: datetime,
     ) -> int:
+        """Process PRs for a single repo. Returns count of emitted records."""
         cursor_entry = repo_cursors.get(repo_id, {})
         stored_updated_at = cursor_entry.get("updatedAt")
         backfill_cursor = cursor_entry.get("backfill_cursor")
 
         if backfill_cursor is not None:
+            # Phase 1 still in progress — first do a quick incremental check
+            # from top to catch PRs updated since last sync, then resume backfill.
             emitted = yield from self._phase1_with_incremental_check(
-                org, repo_id, repo_name, issue_conn,
+                org, repo_id, repo_name, pr_conn,
                 repo_cursors, cursor_entry, start_dt,
             )
         elif stored_updated_at:
+            # Phase 2 — fully synced, incremental from top
             emitted = yield from self._phase2_incremental(
-                org, repo_id, repo_name, issue_conn,
+                org, repo_id, repo_name, pr_conn,
                 repo_cursors, cursor_entry,
             )
         else:
+            # First run for this repo — start backfill
             emitted = yield from self._first_run(
-                org, repo_id, repo_name, issue_conn,
+                org, repo_id, repo_name, pr_conn,
                 repo_cursors, start_dt,
             )
 
         return emitted
 
-    # ── First run ────────────────────────────────────────────────────────
+    # ── First run (no prior state for this repo) ─────────────────────────
 
     def _first_run(
         self,
         org: str,
         repo_id: str,
         repo_name: str,
-        issue_conn: Dict[str, Any],
+        pr_conn: Dict[str, Any],
         repo_cursors: Dict[str, Dict[str, Any]],
         start_dt: datetime,
     ) -> int:
-        nodes = issue_conn.get("nodes") or []
-        page_info = issue_conn.get("pageInfo") or {}
+        """First run: DESC from top, cap 5000, save state."""
+        nodes = pr_conn.get("nodes") or []
+        page_info = pr_conn.get("pageInfo") or {}
         has_next = page_info.get("hasNextPage", False)
         end_cursor = page_info.get("endCursor")
 
@@ -259,6 +273,7 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
         min_updated: Optional[str] = None
         reached_start = False
 
+        # Process inline nodes
         for node in nodes:
             rec, updated_iso = self._prepare_record(node)
             if rec is None:
@@ -273,10 +288,11 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
                 max_updated = updated_iso
             min_updated = updated_iso
 
-        if not reached_start and has_next and end_cursor and emitted < MAX_ISSUES_PER_REPO_PER_SYNC:
-            result = yield from self._fetch_more_issues(
+        # Paginate for more PRs if needed
+        if not reached_start and has_next and end_cursor and emitted < MAX_PRS_PER_REPO_PER_SYNC:
+            result = yield from self._fetch_more_prs(
                 org, repo_name, end_cursor,
-                start_dt, MAX_ISSUES_PER_REPO_PER_SYNC - emitted,
+                start_dt, MAX_PRS_PER_REPO_PER_SYNC - emitted,
                 stop_at_updated=None,
             )
             emitted += result["emitted"]
@@ -289,17 +305,19 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
             has_next = result["has_next"]
             end_cursor = result["end_cursor"]
 
+        # Save state
         entry: Dict[str, Any] = {}
         if max_updated:
             entry["updatedAt"] = max_updated
         if not reached_start and has_next and end_cursor:
+            # Backfill not complete — save cursor for resumption
             entry["backfill_cursor"] = end_cursor
             if min_updated:
                 entry["backfill_low"] = min_updated
         repo_cursors[repo_id] = entry
 
         logger.info(
-            "issues: repo %s first run emitted %d (backfill_complete=%s)",
+            "pull_requests: repo %s first run emitted %d (backfill_complete=%s)",
             repo_name, emitted, reached_start or not has_next,
         )
         return emitted
@@ -311,11 +329,12 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
         org: str,
         repo_id: str,
         repo_name: str,
-        issue_conn: Dict[str, Any],
+        pr_conn: Dict[str, Any],
         repo_cursors: Dict[str, Dict[str, Any]],
         cursor_entry: Dict[str, Any],
         start_dt: datetime,
     ) -> int:
+        """Phase 1: quick incremental check from top + resume backfill."""
         stored_updated_at = cursor_entry.get("updatedAt", "")
         backfill_cursor = cursor_entry["backfill_cursor"]
         stored_updated_dt = _parse_github_dt(stored_updated_at) if stored_updated_at else None
@@ -323,8 +342,10 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
         emitted = 0
         max_updated = stored_updated_at or None
 
-        nodes = issue_conn.get("nodes") or []
-        page_info = issue_conn.get("pageInfo") or {}
+        # Step 1: Quick incremental check from inline nodes (DESC from top)
+        # Emit new/updated PRs until we hit stored_updated_at
+        nodes = pr_conn.get("nodes") or []
+        page_info = pr_conn.get("pageInfo") or {}
         inline_has_next = page_info.get("hasNextPage", False)
         inline_end_cursor = page_info.get("endCursor")
         need_more_incremental = True
@@ -342,27 +363,30 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
             if max_updated is None or updated_iso > max_updated:
                 max_updated = updated_iso
 
+        # If inline wasn't enough to reach stored cursor, paginate more
         if need_more_incremental and inline_has_next and inline_end_cursor:
-            result = yield from self._fetch_more_issues(
+            result = yield from self._fetch_more_prs(
                 org, repo_name, inline_end_cursor,
                 start_dt=None,
-                max_records=MAX_ISSUES_PER_REPO_PER_SYNC - emitted,
+                max_records=MAX_PRS_PER_REPO_PER_SYNC - emitted,
                 stop_at_updated=stored_updated_dt,
             )
             emitted += result["emitted"]
             if result["max_updated"] and (max_updated is None or result["max_updated"] > max_updated):
                 max_updated = result["max_updated"]
 
-        backfill_result = yield from self._fetch_more_issues(
+        # Step 2: Resume backfill from stored backfill_cursor
+        backfill_result = yield from self._fetch_more_prs(
             org, repo_name, backfill_cursor,
             start_dt=start_dt,
-            max_records=MAX_ISSUES_PER_REPO_PER_SYNC - emitted,
+            max_records=MAX_PRS_PER_REPO_PER_SYNC - emitted,
             stop_at_updated=None,
         )
         emitted += backfill_result["emitted"]
         if backfill_result["max_updated"] and (max_updated is None or backfill_result["max_updated"] > max_updated):
             max_updated = backfill_result["max_updated"]
 
+        # Update state
         entry: Dict[str, Any] = {}
         if max_updated:
             entry["updatedAt"] = max_updated
@@ -377,31 +401,33 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
                 entry["backfill_low"] = backfill_result["min_updated"]
             elif cursor_entry.get("backfill_low"):
                 entry["backfill_low"] = cursor_entry["backfill_low"]
+        # else: backfill complete — no backfill_cursor
 
         repo_cursors[repo_id] = entry
 
         logger.info(
-            "issues: repo %s phase1 emitted %d (backfill_complete=%s)",
+            "pull_requests: repo %s phase1 emitted %d (backfill_complete=%s)",
             repo_name, emitted, reached_start or not bf_has_next,
         )
         return emitted
 
-    # ── Phase 2: Incremental ─────────────────────────────────────────────
+    # ── Phase 2: Incremental (fully synced) ──────────────────────────────
 
     def _phase2_incremental(
         self,
         org: str,
         repo_id: str,
         repo_name: str,
-        issue_conn: Dict[str, Any],
+        pr_conn: Dict[str, Any],
         repo_cursors: Dict[str, Dict[str, Any]],
         cursor_entry: Dict[str, Any],
     ) -> int:
+        """Phase 2: DESC from top, stop when updatedAt <= stored cursor."""
         stored_updated_at = cursor_entry["updatedAt"]
         stored_updated_dt = _parse_github_dt(stored_updated_at)
 
-        nodes = issue_conn.get("nodes") or []
-        page_info = issue_conn.get("pageInfo") or {}
+        nodes = pr_conn.get("nodes") or []
+        page_info = pr_conn.get("pageInfo") or {}
         has_next = page_info.get("hasNextPage", False)
         end_cursor = page_info.get("endCursor")
 
@@ -429,29 +455,31 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
             if updated_iso > max_updated:
                 max_updated = updated_iso
 
+        # Paginate if inline wasn't enough to reach cursor
         if not hit_cursor and has_next and end_cursor:
-            result = yield from self._fetch_more_issues(
+            result = yield from self._fetch_more_prs(
                 org, repo_name, end_cursor,
                 start_dt=None,
-                max_records=MAX_ISSUES_PER_REPO_PER_SYNC - emitted,
+                max_records=MAX_PRS_PER_REPO_PER_SYNC - emitted,
                 stop_at_updated=stored_updated_dt,
             )
             emitted += result["emitted"]
             if result["max_updated"] and result["max_updated"] > max_updated:
                 max_updated = result["max_updated"]
 
+        # Update cursor
         repo_cursors[repo_id] = {"updatedAt": max_updated}
 
         if emitted > 0 and not anchor_emitted:
             logger.info(
-                "issues: repo %s phase2 emitted %d new issues",
+                "pull_requests: repo %s phase2 emitted %d new PRs",
                 repo_name, emitted,
             )
         return emitted
 
     # ── Shared pagination helper ─────────────────────────────────────────
 
-    def _fetch_more_issues(
+    def _fetch_more_prs(
         self,
         org: str,
         repo_name: str,
@@ -460,22 +488,23 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
         max_records: int,
         stop_at_updated: Optional[datetime],
     ) -> Dict[str, Any]:
+        """Paginate PRs via FOLLOWUP_QUERY."""
         emitted = 0
         max_updated: Optional[str] = None
         min_updated: Optional[str] = None
         reached_start = False
-        issue_cursor = after_cursor
+        pr_cursor = after_cursor
         has_next = True
 
         while has_next and emitted < max_records:
             try:
                 resp = self._graphql(
                     FOLLOWUP_QUERY,
-                    {"orgName": org, "repoName": repo_name, "issueCursor": issue_cursor},
+                    {"orgName": org, "repoName": repo_name, "prCursor": pr_cursor},
                 )
             except Exception as exc:
                 logger.warning(
-                    "issues: repo %s pagination error (emitted %d): %s",
+                    "pull_requests: repo %s pagination error (emitted %d): %s",
                     repo_name, emitted, exc,
                 )
                 has_next = False
@@ -485,12 +514,12 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
             repo_data = org_data.get("repository")
             if not repo_data:
                 break
-            issue_data = repo_data.get("issues")
-            if not issue_data:
+            pr_data = repo_data.get("pullRequests")
+            if not pr_data:
                 break
 
-            nodes = issue_data.get("nodes") or []
-            page_info = issue_data.get("pageInfo") or {}
+            nodes = pr_data.get("nodes") or []
+            page_info = pr_data.get("pageInfo") or {}
             has_next = page_info.get("hasNextPage", False)
             end_cursor_val = page_info.get("endCursor")
 
@@ -500,11 +529,13 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
                     continue
                 node_dt = _parse_github_dt(updated_iso)
 
+                # Stop at start_date (backfill boundary)
                 if start_dt and node_dt < start_dt:
                     reached_start = True
                     has_next = False
                     break
 
+                # Stop at stored cursor (incremental boundary)
                 if stop_at_updated and node_dt <= stop_at_updated:
                     has_next = False
                     break
@@ -520,7 +551,7 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
 
             if not end_cursor_val:
                 break
-            issue_cursor = end_cursor_val
+            pr_cursor = end_cursor_val
 
         return {
             "emitted": emitted,
@@ -528,7 +559,7 @@ class IssuesStream(GitHubGraphQLMixin, Stream):
             "min_updated": min_updated,
             "reached_start": reached_start,
             "has_next": has_next,
-            "end_cursor": issue_cursor,
+            "end_cursor": pr_cursor,
         }
 
     # ── Record preparation ───────────────────────────────────────────────

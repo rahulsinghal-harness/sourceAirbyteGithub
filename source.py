@@ -13,6 +13,9 @@ from streams.repo_details import RepoDetailsStream
 from streams.releases_details import ReleasesDetailsStream
 from streams.team_repositories import TeamRepositoriesStream
 from streams.issues import IssuesStream
+from streams.pull_requests import PullRequestsStream
+from streams.commits import CommitsStream
+from streams.repo_stats import RepoStatsStream
 from streams.ai_asset import AIAssetStream, AIAssetScanCache, STREAM_TYPE_MAP
 
 logger = logging.getLogger(__name__)
@@ -85,6 +88,9 @@ class GitHubSource(AbstractSource):
                 ReleasesDetailsStream(config=config),
                 TeamRepositoriesStream(config=config),
                 IssuesStream(config=config),
+                PullRequestsStream(config=config),
+                CommitsStream(config=config),
+                RepoStatsStream(config=config),
             ])
 
         scan_cache = AIAssetScanCache()
@@ -142,6 +148,11 @@ class GitHubSource(AbstractSource):
                         "description": "Only include data on or after this date (ISO 8601). Defaults to epoch.",
                         "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
                         "examples": ["2025-01-01T00:00:00Z"],
+                    },
+                    "agent_file_name": {
+                        "type": "string",
+                        "default": "AGENTS.md",
+                        "description": "Filename to detect as the agents file in repositories.",
                     },
                 },
                 "additionalProperties": True,
