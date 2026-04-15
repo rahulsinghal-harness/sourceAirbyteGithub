@@ -10,25 +10,25 @@ from streams.github_graphql import GitHubGraphQLMixin
 
 logger = logging.getLogger(__name__)
 
-QUERY = """
-query($orgName: String!, $after: String) {
-  organization(login: $orgName) {
-    repositories(first: 50, after: $after) {
-      nodes {
+_QUERY_TEMPLATE = """
+query($orgName: String!, $after: String) {{
+  organization(login: $orgName) {{
+    repositories(first: 50, after: $after) {{
+      nodes {{
         id name nameWithOwner url homepageUrl sshUrl
         createdAt updatedAt pushedAt description
         isPrivate isFork isArchived
-        primaryLanguage { name }
-        latestRelease { name tagName publishedAt }
-        languages(first: 20) { edges { size node { name } } }
-        readme: object(expression: "HEAD:README.md") { ... on Blob { text byteSize isBinary } }
-        codeowners: object(expression: "HEAD:CODEOWNERS") { ... on Blob { text byteSize isBinary } }
-        hasAgentsFile: object(expression: "HEAD:Agents.md") { id }
-      }
-      pageInfo { hasNextPage endCursor }
-    }
-  }
-}
+        primaryLanguage {{ name }}
+        latestRelease {{ name tagName publishedAt }}
+        languages(first: 20) {{ edges {{ size node {{ name }} }} }}
+        readme: object(expression: "HEAD:README.md") {{ ... on Blob {{ text byteSize isBinary }} }}
+        codeowners: object(expression: "HEAD:CODEOWNERS") {{ ... on Blob {{ text byteSize isBinary }} }}
+        hasAgentsFile: object(expression: "HEAD:{agent_file_name}") {{ id }}
+      }}
+      pageInfo {{ hasNextPage endCursor }}
+    }}
+  }}
+}}
 """
 
 SCHEMA = {
@@ -109,6 +109,8 @@ class RepoDetailsStream(GitHubGraphQLMixin, Stream):
         super().__init__(**kwargs)
         self._config = config
         self._cursor_value: str = ""
+        agent_file_name = config.get("agent_file_name", "AGENTS.md")
+        self._query = _QUERY_TEMPLATE.format(agent_file_name=agent_file_name)
         self._init_session(config)
 
     @property
@@ -147,7 +149,7 @@ class RepoDetailsStream(GitHubGraphQLMixin, Stream):
         emitted = 0
 
         while has_next:
-            resp = self._graphql(QUERY, {"orgName": org, "after": after})
+            resp = self._graphql(self._query, {"orgName": org, "after": after})
             repos_data = resp["data"]["organization"]["repositories"]
 
             for repo in repos_data["nodes"]:

@@ -149,6 +149,11 @@ class GitHubSource(AbstractSource):
                         "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
                         "examples": ["2025-01-01T00:00:00Z"],
                     },
+                    "agent_file_name": {
+                        "type": "string",
+                        "default": "AGENTS.md",
+                        "description": "Filename to detect as the agents file in repositories.",
+                    },
                 },
                 "additionalProperties": True,
             }
