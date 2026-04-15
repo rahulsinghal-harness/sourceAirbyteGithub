@@ -19,6 +19,7 @@ class AIAsset:
     parent_id: Optional[str] = None
     parent_name: Optional[str] = None
     description: str = ""
+    content: str = ""
     metadata: dict = field(default_factory=dict)
 
     @property

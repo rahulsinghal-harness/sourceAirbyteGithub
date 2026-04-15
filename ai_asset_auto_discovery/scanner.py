@@ -298,6 +298,7 @@ def _parse_plugin_json(repo_name: str, path: str, content: str, branch: str = "m
         source_branch=branch,
         version=data.get("version"),
         description=str(metadata.get("description", "")),
+        content=content,
         metadata=metadata,
     )
     return asset, data
@@ -333,6 +334,7 @@ def _parse_tool_file(repo_name: str, path: str, content: str, asset_type: str, b
         source_branch=branch,
         version=frontmatter.get("version"),
         description=str(metadata.get("description", "")),
+        content=content,
         metadata=metadata,
     )]
 
