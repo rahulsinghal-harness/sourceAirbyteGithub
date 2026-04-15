@@ -20,6 +20,25 @@ STREAM_TYPE_MAP = {
     "aiasset_command": "command",
 }
 
+_FILE_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "asset_id": {"type": "string"},
+        "source_asset_id": {"type": "string"},
+        "parent_asset_id": {"type": ["string", "null"]},
+        "source_repo": {"type": "string"},
+        "file_path": {"type": "string"},
+        "content": {"type": "string"},
+        "size_bytes": {"type": "integer"},
+    },
+    "required": ["asset_id", "source_asset_id", "source_repo", "file_path", "content"],
+    "additionalProperties": True,
+}
+
+# Only emit file content for these asset types.
+_FILE_CONTENT_ASSET_TYPES = {"skill", "agent"}
+
 _SCHEMA = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -146,4 +165,47 @@ class AIAssetStream(Stream):
                 "external_ref": asset.external_ref,
                 "author": asset.metadata.get("author", ""),
                 "license": asset.metadata.get("license", ""),
+            }
+
+
+class AIAssetFileStream(Stream):
+    """Emits file content for skill and agent assets only."""
+
+    primary_key = "asset_id"
+
+    def __init__(self, config: Mapping[str, Any], scan_cache: AIAssetScanCache, **kwargs: Any):
+        super().__init__(**kwargs)
+        self._config = config
+        self._scan_cache = scan_cache
+
+    @property
+    def name(self) -> str:
+        return "aiasset_file_content"
+
+    def get_json_schema(self) -> Mapping[str, Any]:
+        return _FILE_SCHEMA
+
+    def read_records(
+        self,
+        sync_mode: SyncMode,
+        cursor_field: Optional[List[str]] = None,
+        stream_slice: Optional[Mapping[str, Any]] = None,
+        stream_state: Optional[Mapping[str, Any]] = None,
+    ) -> Iterable[Mapping[str, Any]]:
+        all_assets = self._scan_cache.get_assets(self._config)
+
+        for asset in all_assets:
+            if asset.asset_type not in _FILE_CONTENT_ASSET_TYPES:
+                continue
+            if not asset.content:
+                continue
+
+            yield {
+                "asset_id": f"{asset.asset_id}:{asset.source_file}",
+                "source_asset_id": asset.asset_id,
+                "parent_asset_id": asset.parent_id,
+                "source_repo": asset.source_repo,
+                "file_path": asset.source_file,
+                "content": asset.content,
+                "size_bytes": len(asset.content.encode("utf-8")),
             }

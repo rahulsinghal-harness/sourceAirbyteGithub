@@ -13,7 +13,7 @@ from streams.repo_details import RepoDetailsStream
 from streams.releases_details import ReleasesDetailsStream
 from streams.team_repositories import TeamRepositoriesStream
 from streams.issues import IssuesStream
-from streams.ai_asset import AIAssetStream, AIAssetScanCache, STREAM_TYPE_MAP
+from streams.ai_asset import AIAssetStream, AIAssetFileStream, AIAssetScanCache, STREAM_TYPE_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,9 @@ class GitHubSource(AbstractSource):
             ])
 
         scan_cache = AIAssetScanCache()
+        # File content stream FIRST — ensures file_content entities are stored in IM
+        # before ai_asset entities reach IDP (Airbyte CDK reads streams sequentially).
+        result.append(AIAssetFileStream(config=config, scan_cache=scan_cache))
         result.extend(
             AIAssetStream(asset_type=asset_type, config=config, scan_cache=scan_cache)
             for asset_type in STREAM_TYPE_MAP.values()
